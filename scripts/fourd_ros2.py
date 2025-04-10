@@ -43,11 +43,6 @@ class FourDCameraROS2(Node):
         # CV Bridge
         self.bridge = CvBridge()
 
-        # Initialize FourDCameraHandler
-        self.camera_handler = FourDCameraHandler(show_stream=False)
-        self.camera_handler.set_frame_callback(self.handle_frame_event)
-        self.camera_handler.set_intrinsics_callback(self.handle_intrinsics_event)
-
         # Events for synchronization
         self.frame_event = threading.Event()
         self.intrinsics_event = threading.Event()
@@ -57,7 +52,22 @@ class FourDCameraROS2(Node):
         self.current_intrinsics = None
 
         # Start the camera handler
-        self.camera_handler.start()
+        self.startCamera()
+
+        # wait first frame
+        while True:
+            self.logger.info("Waiting for first frame...")
+            start_ok = self.frame_event.wait(timeout=10.0)
+            if not start_ok:
+                self.logger.warning("No frame received for more than 30 seconds. Restarting camera handler.")
+                self.stopCamera()
+                self.logger.info("Restarting camera handler...")
+                self.startCamera()
+                self.frame_event.clear()
+                continue
+            self.logger.info("First frame received.")
+            break
+        self.frame_event.clear()
 
         # Start the publishing loops
         self.frame_publisher_thread = threading.Thread(target=self.publish_frame_loop)
@@ -68,7 +78,17 @@ class FourDCameraROS2(Node):
         self.intrinsics_publisher_thread.start()
 
     def startCamera(self):
+        # Initialize FourDCameraHandler
+        self.camera_handler = FourDCameraHandler(show_stream=False)
+        self.camera_handler.set_frame_callback(self.handle_frame_event)
+        self.camera_handler.set_intrinsics_callback(self.handle_intrinsics_event)
         self.camera_handler.start()
+
+    def stopCamera(self):
+        # Stop the camera handler
+        self.camera_handler.stop()
+        self.camera_handler = None
+        self.logger.info("Camera handler stopped")
 
     def initStereoRectifyMaps(self):
         left_camera_matrix = np.array(self.current_intrinsics["left_camera_matrix"])
@@ -117,10 +137,21 @@ class FourDCameraROS2(Node):
 
     def publish_frame_loop(self):
         while rclpy.ok():
-            if self.frame_event.wait(timeout=1.0):
-                self.logger.info("Publishing frame", once=True)
-                self.publish_frame()
+            img_received = self.frame_event.wait(timeout=5.0)
+
+            # if no image received for mmore than 5 seconds, skip
+            if not img_received:
+                self.logger.warning("No frame received for more than 5 seconds. Restarting camera handler.")
+                self.stopCamera()
+
+                self.logger.info("Restarting camera handler...")
+                self.startCamera()
                 self.frame_event.clear()
+                continue
+
+            self.logger.info("Publishing frame", once=True)
+            self.publish_frame()
+            self.frame_event.clear()
 
     def publish_intrinsics_loop(self):
         while rclpy.ok():

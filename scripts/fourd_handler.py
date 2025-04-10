@@ -69,13 +69,15 @@ class FourDCameraHandler:
 
     def stop(self):
         self.__should_stop = True
-        self.socket.close()
+
+        if not self.socket.closed:
+            self.socket.close()
         self.context.term()
 
-        self.__run_loop_thread.join()
+        self.__run_loop_thread.join(timeout=5)
 
         if self.__show_stream:
-            self.__show_stream_thread.join()
+            self.__show_stream_thread.join(timeout=5)
 
     def set_intrinsics_callback(self, callback):
         self.__intrinsics_callback = callback
@@ -137,7 +139,16 @@ class FourDCameraHandler:
 
     def __run_loop(self):
         while not self.__should_stop:
-            parts = self.socket.recv_multipart()
+            try:
+                parts = self.socket.recv_multipart()
+            except zmq.error.ContextTerminated:
+                break
+            except zmq.error.Again:
+                continue
+            except Exception as e:
+                print(f"Error receiving message: {e}")
+                continue
+
             self.__handle_message(parts)
 
             self.__frame_count += 1
