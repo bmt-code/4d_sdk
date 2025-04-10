@@ -1,0 +1,22 @@
+common:
+    # Resolution of the video. Options: 720p, 1080p, 4k
+    resolution: "1080p"
+
+    # Frames per second of the video. Options: 10, 20, 30
+    # Note: the fps can be limited by the sensor and the processing load.
+    fps: 30
+
+    # Sync left and right images. Options: True, False
+    stereo_sync: True
+
+    # rectify stereo images. Options: "on_host", "on_device", "off"
+    # "on_host" -> rectify on host
+    # "on_device" -> rectify on device, can slow down the fps and demand more power from the power supply
+    # "off" -> no rectification
+    rectify: "on_host"
+
+    # compute depth map. Options: "on_host", "on_device", "off"
+    # "on_host" -> compute depth map on host
+    # "on_device" -> compute depth map on device, can slow down the fps and demand more power from the power supply
+    # "off" -> no depth map
+    depth_map: "on_host"
