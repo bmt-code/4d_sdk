@@ -26,7 +26,9 @@ class FourDCameraROS2(Node):
         self.stereo_maps_set = False
 
         # Publishers
-        self.frame_publisher = self.create_publisher(Image, "camera/fourd/stereo/raw", 10)
+        self.frame_publisher = self.create_publisher(
+            Image, "camera/fourd/stereo/raw", 10
+        )
         self.compressed_frame_publisher = self.create_publisher(
             CompressedImage, "camera/fourd/stereo/raw/compressed", 10
         )
@@ -58,9 +60,11 @@ class FourDCameraROS2(Node):
         while True:
             self.startCamera()
             self.logger.info("Waiting for first frame...")
-            start_ok = self.frame_event.wait(timeout=10.0)
+            start_ok = self.frame_event.wait(timeout=30.0)
             if not start_ok:
-                self.logger.warning("No frame received for more than 30 seconds. Restarting camera handler.")
+                self.logger.warning(
+                    "No frame received for more than 30 seconds. Restarting camera handler."
+                )
                 self.stopCamera()
                 self.logger.info("Restarting camera handler...")
                 self.setupCamera()
@@ -99,8 +103,12 @@ class FourDCameraROS2(Node):
     def initStereoRectifyMaps(self):
         left_camera_matrix = np.array(self.current_intrinsics["left_camera_matrix"])
         right_camera_matrix = np.array(self.current_intrinsics["right_camera_matrix"])
-        left_dist_coeffs = np.array(self.current_intrinsics["left_distortion_coefficients"])
-        right_dist_coeffs = np.array(self.current_intrinsics["right_distortion_coefficients"])
+        left_dist_coeffs = np.array(
+            self.current_intrinsics["left_distortion_coefficients"]
+        )
+        right_dist_coeffs = np.array(
+            self.current_intrinsics["right_distortion_coefficients"]
+        )
         extrinsic_matrix = np.array(self.current_intrinsics["extrinsic_matrix"])
 
         R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
@@ -112,26 +120,35 @@ class FourDCameraROS2(Node):
             extrinsic_matrix[:3, :3],  # Rotation matrix
             extrinsic_matrix[:3, 3],  # Translation vector
         )
-
-        # Compute rectification maps
         self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
-            left_camera_matrix,
-            left_dist_coeffs,
-            R1,
-            P1,
-            (1920, 1080),
-            cv2.CV_16SC2
+            left_camera_matrix, left_dist_coeffs, R1, P1, (1920, 1080), cv2.CV_16SC2
         )
         self.map_right_x, self.map_right_y = cv2.initUndistortRectifyMap(
-            right_camera_matrix,
-            right_dist_coeffs,
-            R2,
-            P2,
-            (1920, 1080),
-            cv2.CV_16SC2
+            right_camera_matrix, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
         )
 
         self.stereo_maps_set = True
+
+    def undistort_image(self, img, mtx, dist):
+        h, w = img.shape[:2]
+        # Convert to numpy arrays if they aren't already
+        mtx = np.array(mtx, dtype=np.float64)
+        dist = np.array(dist, dtype=np.float64)
+        new_mtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+        undistorted_img = cv2.undistort(img, mtx, dist, None, new_mtx)
+        x, y, w, h = roi
+        undistorted_img = undistorted_img[y : y + h, x : x + w]
+        return undistorted_img
+
+    def rectify_stereo_images(self, img_left, img_right):
+
+        rectified_left = cv2.remap(
+            img_left, self.map_left_x, self.map_left_y, cv2.INTER_LINEAR
+        )
+        rectified_right = cv2.remap(
+            img_right, self.map_right_x, self.map_right_y, cv2.INTER_LINEAR
+        )
+        return rectified_left, rectified_right
 
     def handle_frame_event(self, frame):
         self.current_frame = frame
@@ -147,7 +164,9 @@ class FourDCameraROS2(Node):
 
             # if no image received for mmore than 5 seconds, skip
             if not img_received:
-                self.logger.warning("No frame received for more than 5 seconds. Restarting camera handler.")
+                self.logger.warning(
+                    "No frame received for more than 5 seconds. Restarting camera handler."
+                )
                 self.stopCamera()
 
                 self.logger.info("Restarting camera handler...")
@@ -173,30 +192,40 @@ class FourDCameraROS2(Node):
             if self.stereo_maps_set:
 
                 # Apply rectification to the current frame
-                left_image = self.current_frame.image[:, self.current_frame.image.shape[1] // 2:]
-                right_image = self.current_frame.image[:, :self.current_frame.image.shape[1] // 2]
-                left_rectified = cv2.remap(
-                    right_image,
-                    self.map_left_x,
-                    self.map_left_y,
-                    interpolation=cv2.INTER_LINEAR
-                )
-                right_rectified = cv2.remap(
+                left_image = self.current_frame.image[
+                    :, : self.current_frame.image.shape[1] // 2
+                ]
+                right_image = self.current_frame.image[
+                    :, self.current_frame.image.shape[1] // 2 :
+                ]
+
+                # Undistort the images
+                left_image = self.undistort_image(
                     left_image,
-                    self.map_right_x,
-                    self.map_right_y,
-                    interpolation=cv2.INTER_LINEAR
+                    self.current_intrinsics["left_camera_matrix"],
+                    self.current_intrinsics["left_distortion_coefficients"],
+                )
+                right_image = self.undistort_image(
+                    right_image,
+                    self.current_intrinsics["right_camera_matrix"],
+                    self.current_intrinsics["right_distortion_coefficients"],
+                )
+
+                # Rectify the images
+                left_rectified, right_rectified = self.rectify_stereo_images(
+                    left_image, right_image
                 )
 
                 curr_image = np.hstack((left_rectified, right_rectified))
             else:
-                self.logger.info("Stereo maps not set, using original image", throttle_duration_sec=5.0)
+                self.logger.info(
+                    "Stereo maps not set, using original image",
+                    throttle_duration_sec=5.0,
+                )
                 curr_image = self.current_frame.image
 
             # Publish compressed image
-            compressed_msg = self.bridge.cv2_to_compressed_imgmsg(
-                curr_image
-            )
+            compressed_msg = self.bridge.cv2_to_compressed_imgmsg(curr_image)
             compressed_msg.header.stamp = self.get_clock().now().to_msg()
 
             self.compressed_frame_publisher.publish(compressed_msg)
