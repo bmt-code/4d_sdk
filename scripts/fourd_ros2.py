@@ -1,6 +1,7 @@
 import threading
 import numpy as np
 import cv2
+import time
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import TransformStamped
@@ -23,7 +24,20 @@ class FourDCameraROS2(Node):
         self.map_left_y = None
         self.map_right_x = None
         self.map_right_y = None
+        self.intrinsics_set = False
         self.stereo_maps_set = False
+
+        # Data storage
+        self.current_frame = None
+        self.current_intrinsics = None
+        self.left_mtx = None
+        self.left_dist = None
+        self.right_mtx = None
+        self.right_dist = None
+        self.optimal_left_mtx = None
+        self.optimal_left_roi = None
+        self.optimal_right_mtx = None
+        self.optimal_right_roi = None
 
         # Publishers
         self.frame_publisher = self.create_publisher(
@@ -48,10 +62,6 @@ class FourDCameraROS2(Node):
         # Events for synchronization
         self.frame_event = threading.Event()
         self.intrinsics_event = threading.Event()
-
-        # Data storage
-        self.current_frame = None
-        self.current_intrinsics = None
 
         # Start the camera handler
         self.setupCamera()
@@ -100,10 +110,30 @@ class FourDCameraROS2(Node):
         self.stereo_maps_set = False
         self.logger.info("Camera handler stopped")
 
+    def initIntrinsics(self):
+        self.logger.info("Initializing intrinsics")
+
+        if self.current_intrinsics is None:
+            self.logger.info("No intrinsics received, waiting for intrinsics")
+            return
+
+        self.left_mtx = np.array(self.current_intrinsics["left_camera_matrix"])
+        self.left_dist = np.array(self.current_intrinsics["left_distortion_coefficients"])
+        self.right_mtx = np.array(self.current_intrinsics["right_camera_matrix"])
+        self.right_dist = np.array(self.current_intrinsics["right_distortion_coefficients"])
+
+        self.initStereoRectifyMaps()
+
+        self.intrinsics_set = True
+
     def initStereoRectifyMaps(self):
-        left_camera_matrix = np.array(self.current_intrinsics["left_camera_matrix"])
-        right_camera_matrix = np.array(self.current_intrinsics["right_camera_matrix"])
-        left_dist_coeffs = np.array(
+        if not self.intrinsics_set:
+            self.logger.info("Intrinsics not set, waiting for intrinsics")
+            return
+
+        left_mtx = np.array(self.current_intrinsics["left_camera_matrix"])
+        right_mtx = np.array(self.current_intrinsics["right_camera_matrix"])
+        left_dist = np.array(
             self.current_intrinsics["left_distortion_coefficients"]
         )
         right_dist_coeffs = np.array(
@@ -112,33 +142,36 @@ class FourDCameraROS2(Node):
         extrinsic_matrix = np.array(self.current_intrinsics["extrinsic_matrix"])
 
         R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-            left_camera_matrix,
-            left_dist_coeffs,
-            right_camera_matrix,
+            left_mtx,
+            left_dist,
+            right_mtx,
             right_dist_coeffs,
             (1920, 1080),  # Assuming image resolution TODO
             extrinsic_matrix[:3, :3],  # Rotation matrix
             extrinsic_matrix[:3, 3],  # Translation vector
         )
         self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
-            left_camera_matrix, left_dist_coeffs, R1, P1, (1920, 1080), cv2.CV_16SC2
+            left_mtx, left_dist, R1, P1, (1920, 1080), cv2.CV_16SC2
         )
         self.map_right_x, self.map_right_y = cv2.initUndistortRectifyMap(
-            right_camera_matrix, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
+            right_mtx, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
         )
+
+        self.optimal_left_mtx, self.optimal_left_roi = cv2.getOptimalNewCameraMatrix(left_mtx, left_dist, (1920, 1080), 0, (1920, 1080))
+        self.optimal_right_mtx, self.optimal_right_roi = cv2.getOptimalNewCameraMatrix(right_mtx, right_dist_coeffs, (1920, 1080), 0, (1920, 1080))
 
         self.stereo_maps_set = True
 
-    def undistort_image(self, img, mtx, dist):
-        h, w = img.shape[:2]
-        # Convert to numpy arrays if they aren't already
-        mtx = np.array(mtx, dtype=np.float64)
-        dist = np.array(dist, dtype=np.float64)
-        new_mtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
-        undistorted_img = cv2.undistort(img, mtx, dist, None, new_mtx)
-        x, y, w, h = roi
-        undistorted_img = undistorted_img[y : y + h, x : x + w]
-        return undistorted_img
+    def undistort_images(self, img_left, img_right):
+        h_left, w_left = img_left.shape[:2]
+        h_right, w_right = img_right.shape[:2]
+
+        left_undistorted = cv2.undistort(img_left, self.left_mtx, self.left_dist, None, self.optimal_left_mtx)
+        right_undistorted = cv2.undistort(img_right, self.right_mtx, self.right_dist, None, self.optimal_right_mtx)
+
+        # NOTE, we dont crop the images here, because we want to keep the full resolution
+
+        return left_undistorted, right_undistorted
 
     def rectify_stereo_images(self, img_left, img_right):
 
@@ -155,8 +188,10 @@ class FourDCameraROS2(Node):
         self.frame_event.set()
 
     def handle_intrinsics_event(self, intrinsics):
+        self.logger.info("Intrinsics received", once=True)
         self.current_intrinsics = intrinsics
-        self.intrinsics_event.set()
+        if not self.intrinsics_set:
+            self.initIntrinsics()
 
     def publish_frame_loop(self):
         while rclpy.ok():
@@ -181,9 +216,8 @@ class FourDCameraROS2(Node):
 
     def publish_intrinsics_loop(self):
         while rclpy.ok():
-            if self.intrinsics_event.wait(timeout=1.0):
-                self.publish_intrinsics()
-                self.intrinsics_event.clear()
+            self.publish_intrinsics()
+            time.sleep(1.0)
 
     def publish_frame(self):
         if self.current_frame and self.current_frame.image is not None:
@@ -200,16 +234,7 @@ class FourDCameraROS2(Node):
                 ]
 
                 # Undistort the images
-                left_image = self.undistort_image(
-                    left_image,
-                    self.current_intrinsics["left_camera_matrix"],
-                    self.current_intrinsics["left_distortion_coefficients"],
-                )
-                right_image = self.undistort_image(
-                    right_image,
-                    self.current_intrinsics["right_camera_matrix"],
-                    self.current_intrinsics["right_distortion_coefficients"],
-                )
+                left_image, right_image = self.undistort_images(left_image, right_image)
 
                 # Rectify the images
                 left_rectified, right_rectified = self.rectify_stereo_images(
@@ -236,7 +261,16 @@ class FourDCameraROS2(Node):
 
     def publish_intrinsics(self):
         try:
+
+            if not self.intrinsics_set:
+                self.logger.info("Intrinsics not set, waiting for intrinsics")
+                return
+
             intrinsics = self.current_intrinsics
+            self.left_mtx = np.array(intrinsics["left_camera_matrix"])
+            self.left_dist = np.array(intrinsics["left_distortion_coefficients"])
+            self.right_mtx = np.array(intrinsics["right_camera_matrix"])
+            self.right_dist = np.array(intrinsics["right_distortion_coefficients"])
 
             if not self.stereo_maps_set:
                 self.logger.info(f"Intrinsics: {intrinsics}")
@@ -249,10 +283,10 @@ class FourDCameraROS2(Node):
             left_camera_info.header.stamp = self.get_clock().now().to_msg()
             left_camera_info.header.frame_id = "left_camera"
             left_camera_info.k = (
-                np.array(intrinsics["left_camera_matrix"]).ravel().tolist()
+                self.optimal_left_mtx.ravel().tolist()
             )
             left_camera_info.d = (
-                np.array(intrinsics["left_distortion_coefficients"]).ravel().tolist()
+                self.left_dist.ravel().tolist()
             )
             left_camera_info.width = 1920
             left_camera_info.height = 1080
@@ -263,10 +297,10 @@ class FourDCameraROS2(Node):
             right_camera_info.header.stamp = self.get_clock().now().to_msg()
             right_camera_info.header.frame_id = "right_camera"
             right_camera_info.k = (
-                np.array(intrinsics["right_camera_matrix"]).ravel().tolist()
+                self.optimal_right_mtx.ravel().tolist()
             )
             right_camera_info.d = (
-                np.array(intrinsics["right_distortion_coefficients"]).ravel().tolist()
+                self.right_dist.ravel().tolist()
             )
             right_camera_info.width = 1920
             right_camera_info.height = 1080
