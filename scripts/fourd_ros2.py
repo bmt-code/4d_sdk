@@ -283,7 +283,7 @@ class FourDCameraROS2(Node):
             left_camera_info.header.stamp = self.get_clock().now().to_msg()
             left_camera_info.header.frame_id = "left_camera"
             left_camera_info.k = (
-                self.optimal_left_mtx.ravel().tolist()
+                self.left_mtx.ravel().tolist()
             )
             left_camera_info.d = (
                 self.left_dist.ravel().tolist()
@@ -297,7 +297,7 @@ class FourDCameraROS2(Node):
             right_camera_info.header.stamp = self.get_clock().now().to_msg()
             right_camera_info.header.frame_id = "right_camera"
             right_camera_info.k = (
-                self.optimal_right_mtx.ravel().tolist()
+                self.right_mtx.ravel().tolist()
             )
             right_camera_info.d = (
                 self.right_dist.ravel().tolist()
