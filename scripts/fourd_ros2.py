@@ -64,24 +64,16 @@ class FourDCameraROS2(Node):
         self.intrinsics_event = threading.Event()
 
         # Start the camera handler
-        self.setupCamera()
+        self.setup_camera()
+        self.start_camera()
+
+        # wait for connection
+        self.camera_handler.wait_for_connection(timeout=30.0)
 
         # wait first frame
-        while True:
-            self.startCamera()
-            self.logger.info("Waiting for first frame...")
-            start_ok = self.frame_event.wait(timeout=30.0)
-            if not start_ok:
-                self.logger.warning(
-                    "No frame received for more than 30 seconds. Restarting camera handler."
-                )
-                self.stopCamera()
-                self.logger.info("Restarting camera handler...")
-                self.setupCamera()
-                self.frame_event.clear()
-                continue
-            self.logger.info("First frame received.")
-            break
+        self.camera_handler.wait_for_image(timeout=30.0)
+
+        # clear the frame event
         self.frame_event.clear()
 
         # Start the publishing loops
@@ -92,16 +84,16 @@ class FourDCameraROS2(Node):
         self.frame_publisher_thread.start()
         self.intrinsics_publisher_thread.start()
 
-    def setupCamera(self):
+    def setup_camera(self):
         # Initialize FourDCameraHandler
         self.camera_handler = FourDCameraHandler(show_stream=False)
         self.camera_handler.set_frame_callback(self.handle_frame_event)
         self.camera_handler.set_intrinsics_callback(self.handle_intrinsics_event)
 
-    def startCamera(self):
+    def start_camera(self):
         self.camera_handler.start()
 
-    def stopCamera(self):
+    def stop_camera(self):
         # Stop the camera handler
         self.camera_handler.stop()
         self.camera_handler = None
@@ -110,7 +102,7 @@ class FourDCameraROS2(Node):
         self.stereo_maps_set = False
         self.logger.info("Camera handler stopped")
 
-    def initIntrinsics(self):
+    def init_intrinsics(self):
         self.logger.info("Initializing intrinsics")
 
         if self.current_intrinsics is None:
@@ -122,11 +114,11 @@ class FourDCameraROS2(Node):
         self.right_mtx = np.array(self.current_intrinsics["right_camera_matrix"])
         self.right_dist = np.array(self.current_intrinsics["right_distortion_coefficients"])
 
-        self.initStereoRectifyMaps()
+        self.init_stereo_rectify_maps()
 
         self.intrinsics_set = True
 
-    def initStereoRectifyMaps(self):
+    def init_stereo_rectify_maps(self):
         if not self.intrinsics_set:
             self.logger.info("Intrinsics not set, waiting for intrinsics")
             return
@@ -191,7 +183,7 @@ class FourDCameraROS2(Node):
         self.logger.info("Intrinsics received", once=True)
         self.current_intrinsics = intrinsics
         if not self.intrinsics_set:
-            self.initIntrinsics()
+            self.init_intrinsics()
 
     def publish_frame_loop(self):
         while rclpy.ok():
@@ -199,15 +191,6 @@ class FourDCameraROS2(Node):
 
             # if no image received for mmore than 5 seconds, skip
             if not img_received:
-                self.logger.warning(
-                    "No frame received for more than 5 seconds. Restarting camera handler."
-                )
-                self.stopCamera()
-
-                self.logger.info("Restarting camera handler...")
-                self.setupCamera()
-                self.startCamera()
-                self.frame_event.clear()
                 continue
 
             self.logger.info("Publishing frame", once=True)
@@ -275,7 +258,7 @@ class FourDCameraROS2(Node):
             if not self.stereo_maps_set:
                 self.logger.info(f"Intrinsics: {intrinsics}")
                 self.logger.info("Initializing stereo maps")
-                self.initStereoRectifyMaps()
+                self.init_stereo_rectify_maps()
                 self.logger.info("Stereo maps initialized")
 
             # Publish left camera info
