@@ -43,9 +43,9 @@ class FourDCameraHandler:
         self.desired_fps = None  # Frames per second
 
         # status variables
-        self.__handler_status = "stopped"  # stopped, started
-        self.__last_status_time = time.time()  # Track last status time
-        self.__status_timeout = 5.0  # Timeout in seconds
+        self.__handler_status = "stop"  # stop, start
+        self.__last_status_time = None  # Track last status time
+        self.__status_timeout = 30.0  # Timeout in seconds
         self.__status_check_interval = 1.0  # Check every second
 
         # private attributes
@@ -55,9 +55,14 @@ class FourDCameraHandler:
         self.__logger = CustomLogger("FourDCameraHandler")
 
         # zmq setup
-        self.__context = None
-        self.__socket = None
-        self.__start_socket()
+        self.context = zmq.Context()
+        self.pub_socket = self.context.socket(zmq.PUB)
+        self.pub_socket.connect(f"tcp://{self.ip}:5556")
+
+        # Initialize subscriber socket
+        self._setup_subscriber()
+
+        self.prev_time = time.time()
 
         # frame and intrinsics
         self.__last_frame = None
@@ -88,23 +93,36 @@ class FourDCameraHandler:
 
         self.__logger.info("FourDCameraHandler initialized")
 
+    def _setup_subscriber(self):
+        """Setup or reset the subscriber socket with proper topic filters"""
+        if hasattr(self, "sub_socket"):
+            self.sub_socket.close()
+
+        self.sub_socket = self.context.socket(zmq.SUB)
+        self.sub_socket.setsockopt(zmq.LINGER, 0)  # Don't linger on close
+        self.sub_socket.setsockopt(
+            zmq.RCVHWM, 2
+        )  # Set high water mark to prevent message queue buildup
+        self.sub_socket.setsockopt(
+            zmq.RCVTIMEO, 100
+        )  # Set a small timeout to prevent blocking
+        self.sub_socket.connect(f"tcp://{self.ip}:5555")
+
+        # Set up topic filters
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "frame")
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "intrinsics")
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "status")
+
     def start(self, wait=True):
         self.__should_exit = False
         self.__logger.info("Starting camera handler...")
 
         self.__run_loop_thread = threading.Thread(target=self.__run_loop)
         self.__run_loop_thread.start()
-
-        self.__handler_status = "started"
+        self.__handler_status = "start"
 
         while not self.__should_exit:
             time.sleep(1)
-
-            # check if socket is ok
-            # if not self.__check_connection():
-            #     self.__logger.error("Socket is not properly connected. Retrying...")
-            #     # self.__restart_socket()
-            #     continue
 
             # check if camera is reachable
             if not self.__check_ping():
@@ -113,8 +131,9 @@ class FourDCameraHandler:
 
             try:
                 # send start message to the camera
-                start_msg = ["start".encode(), "".encode()]
-                self.__socket.send_multipart(start_msg, zmq.NOBLOCK)
+                start_msg = {"action": "start"}
+                start_msg = json.dumps(start_msg).encode()
+                self.pub_socket.send_multipart([b"command", start_msg], zmq.NOBLOCK)
             except zmq.error.Again:
                 self.__logger.error(
                     "Failed to send start message: Socket is not ready. Trying again."
@@ -141,7 +160,6 @@ class FourDCameraHandler:
                     )
                     continue
                 self.__logger.info("Camera started to stream images!")
-
                 break
 
         # show stream
@@ -176,8 +194,16 @@ class FourDCameraHandler:
         if self.__status_checker_thread:
             self.__status_checker_thread.join(timeout=1.0)
 
-        # stop socket
-        self.__stop_socket()
+        # stop sockets
+        try:
+            if hasattr(self, "pub_socket"):
+                self.pub_socket.close()
+            if hasattr(self, "sub_socket"):
+                self.sub_socket.close()
+            if hasattr(self, "context"):
+                self.context.term()
+        except Exception as e:
+            self.__logger.error(f"Error closing sockets: {e}")
 
         return True
 
@@ -186,28 +212,6 @@ class FourDCameraHandler:
 
     def set_frame_callback(self, callback):
         self.__frame_callback = callback
-
-    def __start_socket(self):
-        self.__context = zmq.Context()
-        self.__socket = self.__context.socket(zmq.PAIR)
-        self.__socket.setsockopt(zmq.LINGER, 0)  # Don't linger on close
-        self.__socket.connect(f"tcp://{self.ip}:{self.port}")
-        self.prev_time = time.time()
-
-    def __stop_socket(self):
-        if self.__socket is None:
-            return
-
-        if not self.__socket.closed:
-            self.__socket.close(linger=0)
-        last_context = self.__context
-        self.__context = zmq.Context()
-        self.__socket = self.__context.socket(zmq.PAIR)
-        last_context.term()
-
-    def __restart_socket(self):
-        self.__stop_socket()
-        self.__start_socket()
 
     def __ping(self, host):
         param = "-n" if platform.system().lower() == "windows" else "-c"
@@ -228,69 +232,47 @@ class FourDCameraHandler:
             self.__logger.error(f"Failed to ping camera: {e}")
             return False
 
-    def __check_connection(self, timeout_ms=1000):
-        """Check if the ZMQ connection is really established by attempting a handshake"""
-        if self.__socket is None or self.__socket.closed:
-            return False
-
-        try:
-            # Set a timeout for this check
-            self.__socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
-
-            # Send a test message
-            test_msg = ["test".encode(), "".encode()]
-            self.__socket.send_multipart(test_msg, zmq.NOBLOCK)
-
-            # Try to receive a response
-            try:
-                self.__socket.recv_multipart()
-                return True
-            except zmq.error.Again:
-                # No response received within timeout
-                return False
-        except Exception as e:
-            self.__logger.error(f"Connection check failed: {e}")
-            return False
-        finally:
-            # Reset timeout to infinite
-            self.__socket.setsockopt(zmq.RCVTIMEO, -1)
-
     def __status_checker_loop(self):
         """Thread that checks camera status periodically"""
         while not self.__should_exit:
             time.sleep(self.__status_check_interval)
 
             # continue if camera is not started
-            if self.__handler_status != "started":
+            if self.__handler_status != "start":
+                continue
+
+            if self.__last_status_time is None:
                 continue
 
             # check if status message is received within the timeout period
             current_time = time.time()
             if current_time - self.__last_status_time > self.__status_timeout:
                 self.__logger.error(
-                    f"No status message received for {self.__status_timeout} seconds. Restarting camera..."
+                    f"No status message received for {self.__status_timeout} seconds. Reconnecting..."
                 )
+                self.connected = False
+                self.__connected_event.clear()
 
-                # restart socket
-                self.__restart_socket()
+                # Reset subscriber socket
+                self._setup_subscriber()
 
                 # start camera
                 self.start()
-
+            else:
+                self.connected = True
+                self.__connected_event.set()
 
     def __status_sender(self):
-        if self.__socket.closed:
-            return
-
         self.__logger.info(
             "Handler is sending status messages to camera...", log_once=True
         )
 
         try:
             # send status message to the camera
-            msg_content = self.__handler_status.encode()
-            status_msg = ["status".encode(), msg_content]
-            self.__socket.send_multipart(status_msg, zmq.NOBLOCK)
+            msg_content = self.__handler_status
+            status_msg = {"action": msg_content}
+            status_msg = json.dumps(status_msg).encode()
+            self.pub_socket.send_multipart([b"command", status_msg], zmq.NOBLOCK)
         except zmq.error.Again:
             self.__logger.error(
                 "Failed to send status message: Socket is not ready. Trying again."
@@ -320,12 +302,11 @@ class FourDCameraHandler:
             return None
 
     def __handle_frame_message(self, parts):
-
         # handle timestamp
-        timestamp = parts[1].decode()
+        timestamp = parts[0].decode()
 
         # decode image
-        image_bytes = parts[2]
+        image_bytes = parts[1]
         image = self.__decode_frame(image_bytes)
         if image is None:
             self.__logger.error("Failed to decode image")
@@ -353,7 +334,7 @@ class FourDCameraHandler:
 
     def __handle_intrinsics_message(self, parts):
         # handle timestamp
-        intrinsics = self.__decode_string(parts[1])
+        intrinsics = self.__decode_string(parts[0])
         if intrinsics is None:
             self.__logger.error("Failed to decode intrinsics")
             return
@@ -367,68 +348,58 @@ class FourDCameraHandler:
             self.__intrinsics_callback(intrinsics)
 
     def __handle_camera_status(self, parts):
-        if len(parts) < 2:
-            return
-
-        status = self.__decode_string(parts[1])
-        if status == "started":
-            connected = True
-        elif status == "stopped":
-            connected = False
-        else:
-            self.__logger.warn(f"Unknown camera status: {status}")
-            return
-
-        if self.connected != connected:
-            self.connected = connected
-            if self.connected:
-                self.__connected_event.set()
-                self.connected = True
-                self.__logger.info("Stereo 4D reported that it is started")
-            else:
-                self.__connected_event.clear()
-                self.connected = False
-                self.__logger.info("Stereo 4D reported that it is stopped")
 
         # Update last status time
         self.__last_status_time = time.time()
 
     def __handle_message(self, parts):
-
         # check if length of parts is more than 0
-        if len(parts) == 0:
+        if not parts or len(parts) == 0:
             return
 
-        message_type = self.__decode_string(parts[0])
-        if message_type is None:
-            self.__logger.error("Failed to decode message type")
-            return
-        if message_type == "frame":
-            self.__handle_frame_message(parts)
-        elif message_type == "intrinsics":
-            self.__handle_intrinsics_message(parts)
-        elif message_type == "camera_status":
-            # handle camera status
-            self.__handle_camera_status(parts)
-        else:
-            self.__logger.warn(f"Unknown message type: {message_type}")
+        try:
+            # Get topic and validate it
+            topic = self.__decode_string(parts[0])
+            if topic not in ["frame", "intrinsics", "status"]:
+                self.__logger.warn(f"Received message with invalid topic: {topic}")
+                return
+
+            # Handle message based on topic
+            if topic == "frame":
+                if len(parts) >= 3:  # Ensure we have enough parts for frame message
+                    self.__handle_frame_message(parts[1:])
+            elif topic == "intrinsics":
+                if (
+                    len(parts) >= 2
+                ):  # Ensure we have enough parts for intrinsics message
+                    self.__handle_intrinsics_message(parts[1:])
+            elif topic == "status":
+                self.__handle_camera_status(parts)
+        except Exception as e:
+            self.__logger.error(f"Error handling message: {e}")
 
     def __run_loop(self):
         while not self.__should_exit:
             try:
-                parts = self.__socket.recv_multipart()
+                # Use a small timeout to prevent blocking
+                self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)
+                parts = self.sub_socket.recv_multipart()
+
+                if (
+                    parts and not self.__should_exit
+                ):  # Check should_exit again after receive
+                    self.__handle_message(parts)
             except zmq.error.ContextTerminated:
                 break
             except zmq.error.Again:
+                # No message available, continue
                 continue
             except Exception as e:
-                self.__logger.error(f"Error receiving message: {e}")
+                self.__logger.error(f"Error in run loop: {e}")
+                time.sleep(0.1)  # Sleep a bit longer on error
                 continue
 
-            self.__handle_message(parts)
-
     def __show_stream_loop(self):
-
         cv2.namedWindow("Stream", cv2.WINDOW_NORMAL)
 
         while not self.__should_exit:
@@ -437,6 +408,13 @@ class FourDCameraHandler:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
         cv2.destroyAllWindows()
+
+    def __del__(self):
+        """Ensure proper cleanup when object is destroyed"""
+        try:
+            self.stop()
+        except Exception as e:
+            self.__logger.error(f"Error in destructor: {e}")
 
 
 if __name__ == "__main__":
