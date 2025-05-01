@@ -1,15 +1,19 @@
 import threading
-import numpy as np
-import cv2
 import time
+
+import cv2
+import numpy as np
 import rclpy
 from cv_bridge import CvBridge
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
 from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
-from fourd_handler import FourDCameraHandler
+from rclpy.timer import Timer
 from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from tf2_ros import TransformBroadcaster
+
+from .stereo_4d import Stereo4DCameraHandler
 
 
 class FourDCameraROS2(Node):
@@ -41,16 +45,20 @@ class FourDCameraROS2(Node):
 
         # Publishers
         self.frame_publisher = self.create_publisher(
-            Image, "camera/fourd/stereo/raw", 10
+            Image, "camera/fourd/stereo/raw", 2
         )
         self.compressed_frame_publisher = self.create_publisher(
-            CompressedImage, "camera/fourd/stereo/raw/compressed", 10
+            CompressedImage, "camera/fourd/stereo/raw/compressed", 2
         )
         self.left_camera_info_publisher = self.create_publisher(
-            CameraInfo, "camera/fourd/left/camera_info", 10
+            CameraInfo, "camera/fourd/left/camera_info", 2
         )
         self.right_camera_info_publisher = self.create_publisher(
-            CameraInfo, "camera/fourd/right/camera_info", 10
+            CameraInfo, "camera/fourd/right/camera_info", 2
+        )
+
+        self.diagnostics_publisher = self.create_publisher(
+            DiagnosticArray, "diagnostics", 2
         )
 
         # Transform Broadcaster for extrinsics
@@ -78,17 +86,22 @@ class FourDCameraROS2(Node):
 
         # Start the publishing loops
         self.frame_publisher_thread = threading.Thread(target=self.publish_frame_loop)
-        self.intrinsics_publisher_thread = threading.Thread(
-            target=self.publish_intrinsics_loop
-        )
         self.frame_publisher_thread.start()
-        self.intrinsics_publisher_thread.start()
+
+        # timer for intrinsics
+        self.intrinsics_publisher_timer = self.create_timer(
+            0.5, self.publish_intrinsics
+        )
+
+        # timer for diagnostics
+        self.diagnostics_timer = self.create_timer(1.0, self.publish_diagnostics)
+        self.logger.info("4D Camera Node initialized")
 
     def setup_camera(self):
         # Initialize FourDCameraHandler
-        self.camera_handler = FourDCameraHandler(show_stream=False)
+        self.camera_handler = Stereo4DCameraHandler(show_stream=False)
         self.camera_handler.set_frame_callback(self.handle_frame_event)
-        self.camera_handler.set_intrinsics_callback(self.handle_intrinsics_event)
+        self.camera_handler.set_left_camera_info_callback(self.handle_intrinsics_event)
 
     def start_camera(self):
         self.camera_handler.start()
@@ -110,9 +123,13 @@ class FourDCameraROS2(Node):
             return
 
         self.left_mtx = np.array(self.current_intrinsics["left_camera_matrix"])
-        self.left_dist = np.array(self.current_intrinsics["left_distortion_coefficients"])
+        self.left_dist = np.array(
+            self.current_intrinsics["left_distortion_coefficients"]
+        )
         self.right_mtx = np.array(self.current_intrinsics["right_camera_matrix"])
-        self.right_dist = np.array(self.current_intrinsics["right_distortion_coefficients"])
+        self.right_dist = np.array(
+            self.current_intrinsics["right_distortion_coefficients"]
+        )
 
         self.init_stereo_rectify_maps()
 
@@ -125,9 +142,7 @@ class FourDCameraROS2(Node):
 
         left_mtx = np.array(self.current_intrinsics["left_camera_matrix"])
         right_mtx = np.array(self.current_intrinsics["right_camera_matrix"])
-        left_dist = np.array(
-            self.current_intrinsics["left_distortion_coefficients"]
-        )
+        left_dist = np.array(self.current_intrinsics["left_distortion_coefficients"])
         right_dist_coeffs = np.array(
             self.current_intrinsics["right_distortion_coefficients"]
         )
@@ -149,8 +164,12 @@ class FourDCameraROS2(Node):
             right_mtx, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
         )
 
-        self.optimal_left_mtx, self.optimal_left_roi = cv2.getOptimalNewCameraMatrix(left_mtx, left_dist, (1920, 1080), 0, (1920, 1080))
-        self.optimal_right_mtx, self.optimal_right_roi = cv2.getOptimalNewCameraMatrix(right_mtx, right_dist_coeffs, (1920, 1080), 0, (1920, 1080))
+        self.optimal_left_mtx, self.optimal_left_roi = cv2.getOptimalNewCameraMatrix(
+            left_mtx, left_dist, (1920, 1080), 0, (1920, 1080)
+        )
+        self.optimal_right_mtx, self.optimal_right_roi = cv2.getOptimalNewCameraMatrix(
+            right_mtx, right_dist_coeffs, (1920, 1080), 0, (1920, 1080)
+        )
 
         self.stereo_maps_set = True
 
@@ -158,8 +177,12 @@ class FourDCameraROS2(Node):
         h_left, w_left = img_left.shape[:2]
         h_right, w_right = img_right.shape[:2]
 
-        left_undistorted = cv2.undistort(img_left, self.left_mtx, self.left_dist, None, self.optimal_left_mtx)
-        right_undistorted = cv2.undistort(img_right, self.right_mtx, self.right_dist, None, self.optimal_right_mtx)
+        left_undistorted = cv2.undistort(
+            img_left, self.left_mtx, self.left_dist, None, self.optimal_left_mtx
+        )
+        right_undistorted = cv2.undistort(
+            img_right, self.right_mtx, self.right_dist, None, self.optimal_right_mtx
+        )
 
         # NOTE, we dont crop the images here, because we want to keep the full resolution
 
@@ -186,6 +209,7 @@ class FourDCameraROS2(Node):
             self.init_intrinsics()
 
     def publish_frame_loop(self):
+
         while rclpy.ok():
             img_received = self.frame_event.wait(timeout=5.0)
 
@@ -193,17 +217,8 @@ class FourDCameraROS2(Node):
             if not img_received:
                 continue
 
-            self.logger.info("Publishing frame", once=True)
-            self.publish_frame()
-            self.frame_event.clear()
-
-    def publish_intrinsics_loop(self):
-        while rclpy.ok():
-            self.publish_intrinsics()
-            time.sleep(1.0)
-
-    def publish_frame(self):
-        if self.current_frame and self.current_frame.image is not None:
+            if self.current_frame is None or self.current_frame.image is None:
+                continue
 
             # Stereo rectify the images based on intrinsics
             if self.stereo_maps_set:
@@ -233,12 +248,15 @@ class FourDCameraROS2(Node):
                 curr_image = self.current_frame.image
 
             # Publish compressed image
-            compressed_msg = self.bridge.cv2_to_compressed_imgmsg(curr_image)
+            # Publish compressed image
+            compressed_msg = self.bridge.cv2_to_compressed_imgmsg(
+                curr_image, dst_format="jpeg"
+            )
             compressed_msg.header.stamp = self.get_clock().now().to_msg()
-
             self.compressed_frame_publisher.publish(compressed_msg)
 
-            msg = self.bridge.cv2_to_imgmsg(curr_image, encoding="bgr8")
+            # Publish raw image
+            msg = self.bridge.cv2_to_imgmsg(curr_image)
             msg.header.stamp = self.get_clock().now().to_msg()
             self.frame_publisher.publish(msg)
 
@@ -265,12 +283,8 @@ class FourDCameraROS2(Node):
             left_camera_info = CameraInfo()
             left_camera_info.header.stamp = self.get_clock().now().to_msg()
             left_camera_info.header.frame_id = "left_camera"
-            left_camera_info.k = (
-                self.left_mtx.ravel().tolist()
-            )
-            left_camera_info.d = (
-                self.left_dist.ravel().tolist()
-            )
+            left_camera_info.k = self.left_mtx.ravel().tolist()
+            left_camera_info.d = self.left_dist.ravel().tolist()
             left_camera_info.width = 1920
             left_camera_info.height = 1080
             self.left_camera_info_publisher.publish(left_camera_info)
@@ -279,12 +293,8 @@ class FourDCameraROS2(Node):
             right_camera_info = CameraInfo()
             right_camera_info.header.stamp = self.get_clock().now().to_msg()
             right_camera_info.header.frame_id = "right_camera"
-            right_camera_info.k = (
-                self.right_mtx.ravel().tolist()
-            )
-            right_camera_info.d = (
-                self.right_dist.ravel().tolist()
-            )
+            right_camera_info.k = self.right_mtx.ravel().tolist()
+            right_camera_info.d = self.right_dist.ravel().tolist()
             right_camera_info.width = 1920
             right_camera_info.height = 1080
             self.right_camera_info_publisher.publish(right_camera_info)
@@ -311,6 +321,36 @@ class FourDCameraROS2(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to publish intrinsics: {e}")
 
+    def publish_diagnostics(self):
+
+        # Create a DiagnosticArray message
+        diag_array = DiagnosticArray()
+        diag_array.header.stamp = self.get_clock().now().to_msg()
+
+        cam_status = self.camera_handler.get_status()
+        status = DiagnosticStatus()
+        status.name = "4D Camera"
+        status.level = DiagnosticStatus.OK if cam_status else DiagnosticStatus.ERROR
+        status.message = f"Camera Status: {cam_status}"
+
+        fps = DiagnosticStatus()
+        fps.name = "FPS"
+        fps.level = (
+            DiagnosticStatus.OK if self.current_frame else DiagnosticStatus.ERROR
+        )
+        fps.message = f"FPS: {self.camera_handler.get_fps()}"
+
+        cam_resolution = self.camera_handler.get_resolution()
+        resolution = DiagnosticStatus()
+        resolution.name = "Resolution"
+        resolution.level = DiagnosticStatus.OK
+        resolution.message = f"Resolution: {cam_resolution[0]}x{cam_resolution[1]}"
+
+        diag_array.status.append(status)
+        diag_array.status.append(fps)
+        diag_array.status.append(resolution)
+        self.diagnostics_publisher.publish(diag_array)
+
     @staticmethod
     def rotation_matrix_to_quaternion(matrix):
         # Convert a 3x3 rotation matrix to a quaternion using scipy
@@ -321,7 +361,8 @@ class FourDCameraROS2(Node):
     def destroy_node(self):
         self.camera_handler.stop()
         self.frame_publisher_thread.join()
-        self.intrinsics_publisher_thread.join()
+        self.intrinsics_publisher_timer.cancel()
+        self.diagnostics_timer.cancel()
         super().destroy_node()
 
 

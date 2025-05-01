@@ -1,14 +1,15 @@
+import json
+import platform
+import subprocess
+import threading
 import time
+from threading import Timer
 
 import cv2
 import numpy as np
 import zmq
-import platform
-import subprocess
-import json
-import threading
-from threading import Timer
-from custom_logger import CustomLogger
+
+from .custom_logger import CustomLogger
 
 
 class RepeatTimer(Timer):
@@ -17,11 +18,19 @@ class RepeatTimer(Timer):
             self.function(*self.args, **self.kwargs)
 
 
-class Frame:
+class Stereo4DFrame:
     def __init__(self, timestamp=None, frame_id=None, image=None):
         self.timestamp = timestamp
         self.frame_id = frame_id
         self.image = image
+
+    def copy(self):
+        """Create a copy of the frame"""
+        return Stereo4DFrame(
+            timestamp=self.timestamp,
+            frame_id=self.frame_id,
+            image=self.image.copy() if self.image is not None else None,
+        )
 
     def __repr__(self):
         return (
@@ -33,7 +42,30 @@ class Frame:
         )
 
 
-class FourDCameraHandler:
+class Stereo4DCameraInfo:
+    def __init__(self):
+        self.width = None
+        self.height = None
+        self.distortion_model = None
+        self.d = None
+        self.k = None
+        self.r = None
+        self.p = None
+
+    def copy(self):
+        """Create a copy of the camera info"""
+        __copy = Stereo4DCameraInfo()
+        __copy.width = self.width
+        __copy.height = self.height
+        __copy.distortion_model = self.distortion_model
+        __copy.d = self.d.copy() if self.d is not None else None
+        __copy.k = self.k.copy() if self.k is not None else None
+        __copy.r = self.r.copy() if self.r is not None else None
+        __copy.p = self.p.copy() if self.p is not None else None
+        return __copy
+
+
+class Stereo4DCameraHandler:
     def __init__(self, ip="172.31.1.77", port=5555, show_stream=False):
 
         # public attributes
@@ -46,7 +78,7 @@ class FourDCameraHandler:
         self.__handler_status = "stop"  # stop, start
         self.__last_status_time = None  # Track last status time
         self.__status_timeout = 30.0  # Timeout in seconds
-        self.__status_check_interval = 1.0  # Check every second
+        self.__run_interval = 1.0  # Check every second
 
         # private attributes
         self.__connected_event = threading.Event()
@@ -55,22 +87,24 @@ class FourDCameraHandler:
         self.__logger = CustomLogger("FourDCameraHandler")
 
         # zmq setup
+        self.sub_socket = None
         self.context = zmq.Context()
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket.connect(f"tcp://{self.ip}:5556")
 
-        # Initialize subscriber socket
-        self._setup_subscriber()
-
-        self.prev_time = time.time()
-
         # frame and intrinsics
         self.__last_frame = None
-        self.__frame_count = 0
         self.__intrinsics_count = 0
 
+        # fps counting
+        self.__fps_measurement_interval = 5.0  # Interval in seconds
+        self.__prev_fps_measured_time = time.time()
+        self.__frame_count = 0
+        self.__received_fps = 0
+
         # external callbacks
-        self.__intrinsics_callback = None
+        self.__left_camera_info_callback = None
+        self.__right_camera_info_callback = None
         self.__frame_callback = None
 
         # should exit flag to stop the system
@@ -78,56 +112,66 @@ class FourDCameraHandler:
 
         # threads
         self.__show_stream_thread = None
-        self.__run_loop_thread = None
-        self.__status_checker_thread = None
+        self.__receiver_timer = None
+        self.__status_checker_timer = None
 
-        # Start status checker thread
-        self.__status_checker_thread = threading.Thread(
-            target=self.__status_checker_loop
-        )
-        self.__status_checker_thread.start()
+        # timers
+        self.__status_sender_timer = None
+        self.__receiver_timer = None
 
-        # status sender
-        self.status_sender = RepeatTimer(1, self.__status_sender)
-        self.status_sender.start()
-
+        # start the run thread
+        self.__run_thread = threading.Thread(target=self.__run)
+        self.__run_thread.start()
         self.__logger.info("FourDCameraHandler initialized")
 
-    def _setup_subscriber(self):
-        """Setup or reset the subscriber socket with proper topic filters"""
-        if hasattr(self, "sub_socket"):
-            self.sub_socket.close()
+    def get_fps(self):
+        """Get the current frames per second (FPS)"""
+        if self.__received_fps == 0:
+            return None
+        return self.__received_fps
 
-        self.sub_socket = self.context.socket(zmq.SUB)
-        self.sub_socket.setsockopt(zmq.LINGER, 0)  # Don't linger on close
-        self.sub_socket.setsockopt(
-            zmq.RCVHWM, 2
-        )  # Set high water mark to prevent message queue buildup
-        self.sub_socket.setsockopt(
-            zmq.RCVTIMEO, 100
-        )  # Set a small timeout to prevent blocking
-        self.sub_socket.connect(f"tcp://{self.ip}:5555")
+    def get_resolution(self):
+        """Get the camera resolution"""
+        if self.__last_frame is None:
+            return None
 
-        # Set up topic filters
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "frame")
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "intrinsics")
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "status")
+        # get the resolution of the last frame
+        height, width = self.__last_frame.image.shape[:2]
+        return (width, height)
+
+    def get_status(self):
+        """Get the camera status"""
+        if self.__last_status_time is None:
+            return None
+
+        # check if status message is received within the timeout period
+        current_time = time.time()
+        if current_time - self.__last_status_time > self.__status_timeout:
+            return False
+        else:
+            return True
 
     def start(self, wait=True):
+        # Initialize subscriber socket
+        self.__setup_subscriber()
+
         self.__should_exit = False
         self.__logger.info("Starting camera handler...")
-
-        self.__run_loop_thread = threading.Thread(target=self.__run_loop)
-        self.__run_loop_thread.start()
         self.__handler_status = "start"
 
         while not self.__should_exit:
             time.sleep(1)
-
             # check if camera is reachable
             if not self.__check_ping():
                 self.__logger.error("Camera is not reachable. Retrying...")
+                self.__setup_subscriber()
                 continue
+            else:
+                self.__logger.info("Camera is connected to the network.")
+                break
+
+        while not self.__should_exit:
+            time.sleep(1)
 
             try:
                 # send start message to the camera
@@ -148,12 +192,14 @@ class FourDCameraHandler:
 
             if wait:
                 # wait for the status message to be received from the camera
+                self.__logger.info("Waiting for camera to start...")
                 if not self.wait_for_connection(timeout=2.0):
                     self.__logger.error("Failed to connect to camera. Retrying...")
                     continue
                 self.__logger.info("Camera reported that it started!")
 
                 # wait for the image to be received from the camera
+                self.__logger.info("Waiting for images from camera...")
                 if not self.wait_for_image(timeout=10.0):
                     self.__logger.error(
                         "Failed to receive image from camera. Retrying..."
@@ -187,12 +233,12 @@ class FourDCameraHandler:
         self.__should_exit = True
 
         # stop the threads
-        if self.__run_loop_thread:
-            self.__run_loop_thread.join(timeout=1.0)
+        if self.__receiver_timer:
+            self.__receiver_timer.join(timeout=1.0)
         if self.__show_stream_thread:
             self.__show_stream_thread.join(timeout=1.0)
-        if self.__status_checker_thread:
-            self.__status_checker_thread.join(timeout=1.0)
+        if self.__status_checker_timer:
+            self.__status_checker_timer.join(timeout=1.0)
 
         # stop sockets
         try:
@@ -207,8 +253,11 @@ class FourDCameraHandler:
 
         return True
 
-    def set_intrinsics_callback(self, callback):
-        self.__intrinsics_callback = callback
+    def set_left_camera_info_callback(self, callback):
+        self.__left_camera_info_callback = callback
+
+    def set_right_camera_info_callback(self, callback):
+        self.__right_camera_info_callback = callback
 
     def set_frame_callback(self, callback):
         self.__frame_callback = callback
@@ -232,10 +281,12 @@ class FourDCameraHandler:
             self.__logger.error(f"Failed to ping camera: {e}")
             return False
 
-    def __status_checker_loop(self):
-        """Thread that checks camera status periodically"""
+    def __run(self):
+        """Main thread of the handler that checks the status of the camera"""
+
         while not self.__should_exit:
-            time.sleep(self.__status_check_interval)
+
+            time.sleep(self.__run_interval)
 
             # continue if camera is not started
             if self.__handler_status != "start":
@@ -246,15 +297,13 @@ class FourDCameraHandler:
 
             # check if status message is received within the timeout period
             current_time = time.time()
-            if current_time - self.__last_status_time > self.__status_timeout:
+            time_wo_status = current_time - self.__last_status_time
+            if time_wo_status > self.__status_timeout:
                 self.__logger.error(
                     f"No status message received for {self.__status_timeout} seconds. Reconnecting..."
                 )
                 self.connected = False
                 self.__connected_event.clear()
-
-                # Reset subscriber socket
-                self._setup_subscriber()
 
                 # start camera
                 self.start()
@@ -284,6 +333,50 @@ class FourDCameraHandler:
         except Exception as e:
             self.__logger.error(f"Failed to send status message: {e}")
 
+    def __setup_subscriber(self):
+        """Setup or reset the subscriber socket with proper topic filters"""
+
+        self.__cancel_timers()
+
+        if self.sub_socket is not None:
+            self.__logger.debug("Closing existing subscriber socket")
+            self.sub_socket.close()
+            self.context.term()
+
+        self.context = zmq.Context()
+        self.sub_socket = self.context.socket(zmq.SUB)
+        # Don't linger on close
+        self.sub_socket.setsockopt(zmq.LINGER, 0)
+        # Set high water mark to prevent message queue buildup
+        self.sub_socket.setsockopt(zmq.RCVHWM, 2)
+        # Set a small timeout to prevent blocking
+        self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)
+        self.sub_socket.connect(f"tcp://{self.ip}:5555")
+
+        # Set up topic filters
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "frame")
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "intrinsics")
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "status")
+
+        self.__start_timers()
+        self.__logger.debug("Subscriber socket setup complete")
+
+    def __start_timers(self):
+        self.__status_sender_timer = RepeatTimer(
+            1, self.__status_sender
+        )
+        self.__status_sender_timer.start()
+        self.__receiver_timer = RepeatTimer(
+            0.01, self.__receiver
+        )
+        self.__receiver_timer.start()
+
+    def __cancel_timers(self):
+        if self.__status_sender_timer:
+            self.__status_sender_timer.cancel()
+        if self.__receiver_timer:
+            self.__receiver_timer.cancel()
+
     def __decode_frame(self, frame_bytes):
         try:
             decoded_frame = cv2.imdecode(
@@ -312,7 +405,7 @@ class FourDCameraHandler:
             self.__logger.error("Failed to decode image")
             return
 
-        frame = Frame(
+        frame = Stereo4DFrame(
             timestamp=timestamp,
             image=image,
         )
@@ -321,16 +414,18 @@ class FourDCameraHandler:
         self.__last_frame = frame
 
         current_time = time.time()
-        elapsed_time = current_time - self.prev_time
+        elapsed_time = current_time - self.__prev_fps_measured_time
 
         # clear and set the frame event
         self.__frame_event.set()
 
-        if elapsed_time >= 1.0:  # Update FPS every second
-            self.prev_time = current_time
+        if elapsed_time >= self.__fps_measurement_interval:
+            self.__prev_fps_measured_time = current_time
+            self.__received_fps = self.__frame_count / elapsed_time
+            self.__frame_count = 0
 
         if self.__frame_callback:
-            self.__frame_callback(frame)
+            self.__frame_callback(frame.copy())
 
     def __handle_intrinsics_message(self, parts):
         # handle timestamp
@@ -344,10 +439,27 @@ class FourDCameraHandler:
 
         self.__intrinsics_count += 1
 
-        if self.__intrinsics_callback:
-            self.__intrinsics_callback(intrinsics)
+        w, h = self.get_resolution()
+        w = w // 2  # TODO: fix this hardcoded value, since we are using stereo camera
 
-    def __handle_camera_status(self, parts):
+        left_camera_info = Stereo4DCameraInfo()
+        left_camera_info.width = w
+        left_camera_info.height = h
+        left_camera_info.k = intrinsics["left_camera_matrix"]
+        left_camera_info.d = intrinsics["left_distortion_coefficients"]
+
+        right_camera_info = Stereo4DCameraInfo()
+        right_camera_info.width = w
+        right_camera_info.height = h
+        right_camera_info.k = intrinsics["right_camera_matrix"]
+        right_camera_info.d = intrinsics["right_distortion_coefficients"]
+
+        if self.__left_camera_info_callback:
+            self.__left_camera_info_callback(left_camera_info.copy())
+        if self.__right_camera_info_callback:
+            self.__right_camera_info_callback(right_camera_info.copy())
+
+    def __handle_camera_status(self):
 
         # Update last status time
         self.__last_status_time = time.time()
@@ -374,37 +486,40 @@ class FourDCameraHandler:
                 ):  # Ensure we have enough parts for intrinsics message
                     self.__handle_intrinsics_message(parts[1:])
             elif topic == "status":
-                self.__handle_camera_status(parts)
+                self.__handle_camera_status()
         except Exception as e:
             self.__logger.error(f"Error handling message: {e}")
 
-    def __run_loop(self):
-        while not self.__should_exit:
-            try:
-                # Use a small timeout to prevent blocking
-                self.sub_socket.setsockopt(zmq.RCVTIMEO, 100)
-                parts = self.sub_socket.recv_multipart()
+    def __receiver(self):
+        try:
+            if self.sub_socket is None:
+                time.sleep(1)
+                return
 
-                if (
-                    parts and not self.__should_exit
-                ):  # Check should_exit again after receive
-                    self.__handle_message(parts)
-            except zmq.error.ContextTerminated:
-                break
-            except zmq.error.Again:
-                # No message available, continue
-                continue
-            except Exception as e:
-                self.__logger.error(f"Error in run loop: {e}")
-                time.sleep(0.1)  # Sleep a bit longer on error
-                continue
+            # Use a small timeout to prevent blocking
+            parts = self.sub_socket.recv_multipart(track=True)
+
+            if (
+                parts and not self.__should_exit
+            ):  # Check should_exit again after receive
+                self.__handle_message(parts)
+        except zmq.error.ContextTerminated:
+            return
+        except zmq.error.Again:
+            # No message available, continue
+            return
+        except Exception as e:
+            self.__logger.error(f"Error in run loop: {e}")
+            time.sleep(0.1)  # Sleep a bit longer on error
+            return
 
     def __show_stream_loop(self):
         cv2.namedWindow("Stream", cv2.WINDOW_NORMAL)
 
         while not self.__should_exit:
             if self.__last_frame is not None:
-                cv2.imshow("Stream", self.__last_frame.image)
+                img = self.__last_frame.image.copy()
+                cv2.imshow("Stream", img)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
         cv2.destroyAllWindows()
@@ -418,7 +533,7 @@ class FourDCameraHandler:
 
 
 if __name__ == "__main__":
-    handler = FourDCameraHandler()
+    handler = Stereo4DCameraHandler(show_stream=True)
     try:
         handler.start(wait=True)
         while True:
