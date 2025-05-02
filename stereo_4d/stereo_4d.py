@@ -71,14 +71,20 @@ class Stereo4DCameraHandler:
         # public attributes
         self.ip = ip
         self.port = port
-        self.connected = False
         self.desired_fps = None  # Frames per second
 
         # status variables
         self.__handler_status = "stop"  # stop, start
         self.__last_status_time = None  # Track last status time
-        self.__status_timeout = 30.0  # Timeout in seconds
+        self.__status_timeout = 10.0  # Timeout in seconds
         self.__run_interval = 1.0  # Check every second
+
+        # start thread to avoid thead duplication
+        self.__start_sequence_thread = None
+
+        # frame drop
+        self.__frame_drop_percent = 0.0  # Percentage of frames to drop
+        self.__frame_drop_count = 0  # Number of frames dropped
 
         # private attributes
         self.__connected_event = threading.Event()
@@ -151,65 +157,36 @@ class Stereo4DCameraHandler:
         else:
             return True
 
-    def start(self, wait=True):
-        # Initialize subscriber socket
-        self.__setup_subscriber()
+    def start(self, wait=True, timeout=None):
 
         self.__should_exit = False
         self.__logger.info("Starting camera handler...")
-        self.__handler_status = "start"
+        self.__handler_status = "starting"
 
-        while not self.__should_exit:
-            time.sleep(1)
-            # check if camera is reachable
-            if not self.__check_ping():
-                self.__logger.error("Camera is not reachable. Retrying...")
-                self.__setup_subscriber()
-                continue
-            else:
-                self.__logger.info("Camera is connected to the network.")
-                break
+        # start the camera thread
+        if self.__start_sequence_thread is None:
+            self.__start_sequence_thread = threading.Thread(
+                target=self.__start_sequence
+            )
+            self.__start_sequence_thread.start()
+        elif not self.__start_sequence_thread.is_alive():
+            self.__start_sequence_thread = threading.Thread(
+                target=self.__start_sequence
+            )
+            self.__start_sequence_thread.start()
+        else:
+            self.__logger.warn("Requested to start camera, but it is already starting.")
+            return False
 
-        while not self.__should_exit:
-            time.sleep(1)
-
-            try:
-                # send start message to the camera
-                start_msg = {"action": "start"}
-                start_msg = json.dumps(start_msg).encode()
-                self.pub_socket.send_multipart([b"command", start_msg], zmq.NOBLOCK)
-            except zmq.error.Again:
-                self.__logger.error(
-                    "Failed to send start message: Socket is not ready. Trying again."
-                )
-                continue
-            except zmq.error.ContextTerminated:
-                self.__logger.error("Failed to send start message: Context terminated.")
-                continue
-            except Exception as e:
-                self.__logger.error(f"Failed to send start message: {e}")
-                continue
-
-            if wait:
-                # wait for the status message to be received from the camera
-                self.__logger.info("Waiting for camera to start...")
-                if not self.wait_for_connection(timeout=2.0):
-                    self.__logger.error("Failed to connect to camera. Retrying...")
-                    continue
-                self.__logger.info("Camera reported that it started!")
-
-                # wait for the image to be received from the camera
-                self.__logger.info("Waiting for images from camera...")
-                if not self.wait_for_image(timeout=10.0):
-                    self.__logger.error(
-                        "Failed to receive image from camera. Retrying..."
-                    )
-                    continue
-                self.__logger.info("Camera started to stream images!")
-                break
+        # if wait is True, wait for the camera to start
+        if wait:
+            self.__logger.info("Waiting for camera to start...")
+            if not self.wait_for_connection(timeout=timeout):
+                self.__logger.error("Timeout waiting for camera to start.")
+                return False
 
         # show stream
-        if self.__show_stream:
+        if self.__show_stream and self.__show_stream_thread is None:
             self.__show_stream_thread = threading.Thread(target=self.__show_stream_loop)
             self.__show_stream_thread.start()
 
@@ -219,11 +196,15 @@ class Stereo4DCameraHandler:
         return self.connected
 
     def wait_for_connection(self, timeout=None):
-        # wait the connection event
-        if self.__connected_event.wait(timeout):
-            return True
-        else:
-            return False
+        t = time.time()
+        while not self.__should_exit:
+            if self.__handler_status == "started":
+                return True
+            if timeout is not None:
+                if time.time() - t > timeout:
+                    return False
+            time.sleep(0.1)
+        return False
 
     def wait_for_image(self, timeout=None):
         self.__frame_event.wait(timeout)
@@ -232,13 +213,7 @@ class Stereo4DCameraHandler:
     def stop(self):
         self.__should_exit = True
 
-        # stop the threads
-        if self.__receiver_timer:
-            self.__receiver_timer.join(timeout=1.0)
-        if self.__show_stream_thread:
-            self.__show_stream_thread.join(timeout=1.0)
-        if self.__status_checker_timer:
-            self.__status_checker_timer.join(timeout=1.0)
+        self.__cancel_timers()
 
         # stop sockets
         try:
@@ -281,6 +256,29 @@ class Stereo4DCameraHandler:
             self.__logger.error(f"Failed to ping camera: {e}")
             return False
 
+    def __is_frame_drop_ok(self):
+        """Check if the frame drop percentage is higher than 50%"""
+        if self.__frame_drop_percent > 50:
+            self.__logger.error(
+                f"Frame drop percentage is too high: {self.__frame_drop_percent:.2f}%"
+            )
+            return False
+        return True
+
+    def __is_status_within_range(self):
+        """Check if the status message is received within the timeout period"""
+        if self.__last_status_time is None:
+            return False
+
+        current_time = time.time()
+        time_wo_status = current_time - self.__last_status_time
+        if time_wo_status > self.__status_timeout:
+            self.__logger.error(
+                f"No status message received for {self.__status_timeout} seconds."
+            )
+            return False
+        return True
+
     def __run(self):
         """Main thread of the handler that checks the status of the camera"""
 
@@ -288,28 +286,25 @@ class Stereo4DCameraHandler:
 
             time.sleep(self.__run_interval)
 
-            # continue if camera is not started
-            if self.__handler_status != "start":
-                continue
+            if self.__handler_status == "starting":
+                # check if camera status was received
+                if self.__is_status_within_range():
+                    self.__connected_event.set()
+                    self.__logger.info("Camera started successfully!")
+                    continue
 
-            if self.__last_status_time is None:
-                continue
+            elif self.__handler_status == "started":
+                # restart if frame drop is higher than 50%
+                if not self.__is_frame_drop_ok():
+                    self.__connected_event.clear()
+                    self.start(wait=False)
+                    continue
 
-            # check if status message is received within the timeout period
-            current_time = time.time()
-            time_wo_status = current_time - self.__last_status_time
-            if time_wo_status > self.__status_timeout:
-                self.__logger.error(
-                    f"No status message received for {self.__status_timeout} seconds. Reconnecting..."
-                )
-                self.connected = False
-                self.__connected_event.clear()
-
-                # start camera
-                self.start()
-            else:
-                self.connected = True
-                self.__connected_event.set()
+                # check if status message is received within the timeout period
+                if not self.__is_status_within_range():
+                    self.__connected_event.clear()
+                    self.start(wait=False)
+                    continue
 
     def __status_sender(self):
         self.__logger.info(
@@ -333,10 +328,81 @@ class Stereo4DCameraHandler:
         except Exception as e:
             self.__logger.error(f"Failed to send status message: {e}")
 
+    def __start_sequence(self):
+
+        # reset frame drop count
+        self.__frame_drop_count = 0
+        self.__frame_count = 0
+        self.__frame_drop_percent = 0.0
+
+        # Initialize subscriber socket
+        self.__setup_subscriber()
+
+        # wait for ip
+        while not self.__should_exit:
+            time.sleep(1)
+            # check if camera is reachable
+            if not self.__check_ping():
+                self.__logger.error("Camera is not reachable. Retrying...")
+                self.__setup_subscriber()
+                continue
+            else:
+                self.__logger.info("Camera is connected to the network.")
+                break
+
+        # wait for the camera to start
+        while not self.__should_exit:
+            time.sleep(1)
+
+            try:
+                # send start message to the camera
+                start_msg = {"action": "start"}
+                start_msg = json.dumps(start_msg).encode()
+                self.pub_socket.send_multipart([b"command", start_msg], zmq.NOBLOCK)
+            except zmq.error.Again:
+                self.__logger.error(
+                    "Failed to send start message: Socket is not ready. Trying again."
+                )
+                continue
+            except zmq.error.ContextTerminated:
+                self.__logger.error("Failed to send start message: Context terminated.")
+                continue
+            except Exception as e:
+                self.__logger.error(f"Failed to send start message: {e}")
+                continue
+
+            # wait for the status message to be received from the camera
+            self.__logger.info("Waiting for camera to report status...")
+            if not self.__connected_event.wait(timeout=2):
+                self.__logger.error("Timeout waiting camera to report status. Retrying...")
+                continue
+            self.__logger.info("Camera reported that it started!")
+
+            # wait for the image to be received from the camera
+            self.__logger.info("Waiting for images from camera...")
+            if not self.wait_for_image(timeout=10.0):
+                self.__logger.error(
+                    "Failed to receive image from camera. Retrying..."
+                )
+                continue
+
+            # set status to start
+            self.__handler_status = "started"
+
+            self.__logger.info("Camera started to stream images!")
+            break
+
     def __setup_subscriber(self):
         """Setup or reset the subscriber socket with proper topic filters"""
 
+        self.__logger.info("Stopping camera...")
+
         self.__cancel_timers()
+
+        # send stop message to the camera
+        stop_msg = {"action": "stop"}
+        stop_msg = json.dumps(stop_msg).encode()
+        self.pub_socket.send_multipart([b"command", stop_msg], zmq.NOBLOCK)
 
         if self.sub_socket is not None:
             self.__logger.debug("Closing existing subscriber socket")
@@ -372,10 +438,17 @@ class Stereo4DCameraHandler:
         self.__receiver_timer.start()
 
     def __cancel_timers(self):
+        # set cancel to the timers
         if self.__status_sender_timer:
             self.__status_sender_timer.cancel()
         if self.__receiver_timer:
             self.__receiver_timer.cancel()
+
+        # wait for the timers to finish
+        if self.__status_sender_timer:
+            self.__status_sender_timer.join()
+        if self.__receiver_timer:
+            self.__receiver_timer.join()
 
     def __decode_frame(self, frame_bytes):
         try:
@@ -395,6 +468,9 @@ class Stereo4DCameraHandler:
             return None
 
     def __handle_frame_message(self, parts):
+
+        self.__frame_count += 1
+
         # handle timestamp
         timestamp = parts[0].decode()
 
@@ -402,8 +478,15 @@ class Stereo4DCameraHandler:
         image_bytes = parts[1]
         image = self.__decode_frame(image_bytes)
         if image is None:
-            self.__logger.error("Failed to decode image")
+            self.__frame_drop_count += 1
+            self.__frame_drop_percent = (
+                self.__frame_drop_count / (self.__frame_count + 1e-6)
+            ) * 100
             return
+
+        self.__frame_drop_percent = (
+            self.__frame_drop_count / (self.__frame_count + 1e-6)
+        ) * 100
 
         frame = Stereo4DFrame(
             timestamp=timestamp,
