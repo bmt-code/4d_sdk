@@ -3,6 +3,7 @@ import platform
 import subprocess
 import threading
 import time
+import traceback
 from threading import Timer
 
 import cv2
@@ -51,6 +52,7 @@ class Stereo4DCameraInfo:
         self.k = None
         self.r = None
         self.p = None
+        self.extrinsic_matrix = None
 
     def copy(self):
         """Create a copy of the camera info"""
@@ -66,18 +68,34 @@ class Stereo4DCameraInfo:
 
 
 class Stereo4DCameraHandler:
-    def __init__(self, ip="172.31.1.77", port=5555, show_stream=False):
+    def __init__(self, ip="172.31.1.77", port=5555, show_stream=False, rectify_internally=False):
 
         # public attributes
         self.ip = ip
         self.port = port
         self.desired_fps = None  # Frames per second
+        self.rectify_internally = rectify_internally  # Rectification flag
 
         # status variables
         self.__handler_status = "stop"  # stop, start
         self.__last_status_time = None  # Track last status time
-        self.__status_timeout = 10.0  # Timeout in seconds
+        self.__status_timeout = 20.0  # Timeout in seconds
         self.__run_interval = 1.0  # Check every second
+
+        # stereo rectification maps
+        self.stereo_maps_set = False
+        self.map_left_x = None
+        self.map_left_y = None
+        self.map_right_x = None
+        self.map_right_y = None
+        self.optimal_left_mtx = None
+        self.optimal_left_roi = None
+        self.optimal_right_mtx = None
+        self.optimal_right_roi = None
+        self.intrinsics_set = False
+        self.current_intrinsics = None
+        self.left_camera_info = None
+        self.right_camera_info = None
 
         # start thread to avoid thead duplication
         self.__start_sequence_thread = None
@@ -85,6 +103,7 @@ class Stereo4DCameraHandler:
         # frame drop
         self.__frame_drop_percent = 0.0  # Percentage of frames to drop
         self.__frame_drop_count = 0  # Number of frames dropped
+        self.__frame_count_total = 0  # Total number of frames received
 
         # private attributes
         self.__connected_event = threading.Event()
@@ -105,7 +124,7 @@ class Stereo4DCameraHandler:
         # fps counting
         self.__fps_measurement_interval = 5.0  # Interval in seconds
         self.__prev_fps_measured_time = time.time()
-        self.__frame_count = 0
+        self.__frame_count_in_interval = 0
         self.__received_fps = 0
 
         # external callbacks
@@ -135,6 +154,14 @@ class Stereo4DCameraHandler:
         if self.__received_fps == 0:
             return None
         return self.__received_fps
+
+    def get_last_frame(self):
+        """Get the last received frame"""
+        if self.__last_frame is None:
+            return None
+
+        # return a copy of the last frame
+        return self.__last_frame.copy()
 
     def get_resolution(self):
         """Get the camera resolution"""
@@ -228,6 +255,20 @@ class Stereo4DCameraHandler:
 
         return True
 
+    def rectify_stereo_images(self, img_left, img_right):
+
+        if not self.stereo_maps_set:
+            self.__logger.warn("Stereo maps not set, cannot rectify images")
+            return img_left, img_right
+
+        rectified_left = cv2.remap(
+            img_left, self.map_left_x, self.map_left_y, cv2.INTER_LINEAR
+        )
+        rectified_right = cv2.remap(
+            img_right, self.map_right_x, self.map_right_y, cv2.INTER_LINEAR
+        )
+        return rectified_left, rectified_right
+
     def set_left_camera_info_callback(self, callback):
         self.__left_camera_info_callback = callback
 
@@ -288,7 +329,7 @@ class Stereo4DCameraHandler:
 
             if self.__handler_status == "starting":
                 # check if camera status was received
-                if self.__is_status_within_range():
+                if self.__is_status_within_range() and not self.__connected_event.is_set():
                     self.__connected_event.set()
                     self.__logger.info("Camera started successfully!")
                     continue
@@ -332,7 +373,7 @@ class Stereo4DCameraHandler:
 
         # reset frame drop count
         self.__frame_drop_count = 0
-        self.__frame_count = 0
+        self.__frame_count_total = 0
         self.__frame_drop_percent = 0.0
 
         # Initialize subscriber socket
@@ -374,16 +415,16 @@ class Stereo4DCameraHandler:
             # wait for the status message to be received from the camera
             self.__logger.info("Waiting for camera to report status...")
             if not self.__connected_event.wait(timeout=2):
-                self.__logger.error("Timeout waiting camera to report status. Retrying...")
+                self.__logger.error(
+                    "Timeout waiting camera to report status. Retrying..."
+                )
                 continue
             self.__logger.info("Camera reported that it started!")
 
             # wait for the image to be received from the camera
             self.__logger.info("Waiting for images from camera...")
             if not self.wait_for_image(timeout=10.0):
-                self.__logger.error(
-                    "Failed to receive image from camera. Retrying..."
-                )
+                self.__logger.error("Failed to receive image from camera. Retrying...")
                 continue
 
             # set status to start
@@ -428,13 +469,9 @@ class Stereo4DCameraHandler:
         self.__logger.debug("Subscriber socket setup complete")
 
     def __start_timers(self):
-        self.__status_sender_timer = RepeatTimer(
-            1, self.__status_sender
-        )
+        self.__status_sender_timer = RepeatTimer(1, self.__status_sender)
         self.__status_sender_timer.start()
-        self.__receiver_timer = RepeatTimer(
-            0.01, self.__receiver
-        )
+        self.__receiver_timer = RepeatTimer(0.01, self.__receiver)
         self.__receiver_timer.start()
 
     def __cancel_timers(self):
@@ -469,7 +506,7 @@ class Stereo4DCameraHandler:
 
     def __handle_frame_message(self, parts):
 
-        self.__frame_count += 1
+        self.__frame_count_total += 1
 
         # handle timestamp
         timestamp = parts[0].decode()
@@ -480,20 +517,32 @@ class Stereo4DCameraHandler:
         if image is None:
             self.__frame_drop_count += 1
             self.__frame_drop_percent = (
-                self.__frame_drop_count / (self.__frame_count + 1e-6)
+                self.__frame_drop_count / (self.__frame_count_total + 1e-6)
             ) * 100
             return
 
         self.__frame_drop_percent = (
-            self.__frame_drop_count / (self.__frame_count + 1e-6)
+            self.__frame_drop_count / (self.__frame_count_total + 1e-6)
         ) * 100
+
+        if self.rectify_internally and self.stereo_maps_set:
+            # Decode the image into left and right images
+            left_image = image[:, : image.shape[1] // 2]
+            right_image = image[:, image.shape[1] // 2 :]
+
+            # Rectify the stereo images
+            left_image, right_image = self.rectify_stereo_images(
+                left_image, right_image
+            )
+
+            # Combine the rectified images back into a single image
+            image = np.hstack((left_image, right_image))
 
         frame = Stereo4DFrame(
             timestamp=timestamp,
             image=image,
         )
 
-        self.__frame_count += 1
         self.__last_frame = frame
 
         current_time = time.time()
@@ -504,8 +553,8 @@ class Stereo4DCameraHandler:
 
         if elapsed_time >= self.__fps_measurement_interval:
             self.__prev_fps_measured_time = current_time
-            self.__received_fps = self.__frame_count / elapsed_time
-            self.__frame_count = 0
+            self.__received_fps = self.__frame_count_in_interval / elapsed_time
+            self.__frame_count_in_interval = 0
 
         if self.__frame_callback:
             self.__frame_callback(frame.copy())
@@ -525,22 +574,28 @@ class Stereo4DCameraHandler:
         w, h = self.get_resolution()
         w = w // 2  # TODO: fix this hardcoded value, since we are using stereo camera
 
-        left_camera_info = Stereo4DCameraInfo()
-        left_camera_info.width = w
-        left_camera_info.height = h
-        left_camera_info.k = intrinsics["left_camera_matrix"]
-        left_camera_info.d = intrinsics["left_distortion_coefficients"]
+        self.left_camera_info = Stereo4DCameraInfo()
+        self.left_camera_info.width = w
+        self.left_camera_info.height = h
+        self.left_camera_info.k = np.array(intrinsics["left_camera_matrix"])
+        self.left_camera_info.d = np.array(intrinsics["left_distortion_coefficients"])
+        self.left_camera_info.extrinsic_matrix = np.array(intrinsics["extrinsic_matrix"])
 
-        right_camera_info = Stereo4DCameraInfo()
-        right_camera_info.width = w
-        right_camera_info.height = h
-        right_camera_info.k = intrinsics["right_camera_matrix"]
-        right_camera_info.d = intrinsics["right_distortion_coefficients"]
+        self.right_camera_info = Stereo4DCameraInfo()
+        self.right_camera_info.width = w
+        self.right_camera_info.height = h
+        self.right_camera_info.k = np.array(intrinsics["right_camera_matrix"])
+        self.right_camera_info.d = np.array(intrinsics["right_distortion_coefficients"])
+
+        if not self.intrinsics_set:
+            self.intrinsics_set = True
+            self.__logger.info("Intrinsics set successfully")
+            self.__init_stereo_rectify_maps()
 
         if self.__left_camera_info_callback:
-            self.__left_camera_info_callback(left_camera_info.copy())
+            self.__left_camera_info_callback(self.left_camera_info.copy())
         if self.__right_camera_info_callback:
-            self.__right_camera_info_callback(right_camera_info.copy())
+            self.__right_camera_info_callback(self.right_camera_info.copy())
 
     def __handle_camera_status(self):
 
@@ -592,9 +647,47 @@ class Stereo4DCameraHandler:
             # No message available, continue
             return
         except Exception as e:
-            self.__logger.error(f"Error in run loop: {e}")
+            self.__logger.error(f"Error in receiver loop: {e}")
+            traceback.print_exc()
             time.sleep(0.1)  # Sleep a bit longer on error
             return
+
+    def __init_stereo_rectify_maps(self):
+        if not self.intrinsics_set:
+            self.logger.info("Intrinsics not set, waiting for intrinsics")
+            return
+
+        left_mtx = self.left_camera_info.k
+        right_mtx = self.right_camera_info.k
+        left_dist = self.left_camera_info.d
+        right_dist_coeffs = self.right_camera_info.d
+        extrinsic_matrix = self.left_camera_info.extrinsic_matrix
+
+        R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+            left_mtx,
+            left_dist,
+            right_mtx,
+            right_dist_coeffs,
+            (1920, 1080),  # Assuming image resolution TODO
+            extrinsic_matrix[:3, :3],  # Rotation matrix
+            extrinsic_matrix[:3, 3],  # Translation vector
+        )
+        self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
+            left_mtx, left_dist, R1, P1, (1920, 1080), cv2.CV_16SC2
+        )
+        self.map_right_x, self.map_right_y = cv2.initUndistortRectifyMap(
+            right_mtx, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
+        )
+
+        self.optimal_left_mtx, self.optimal_left_roi = cv2.getOptimalNewCameraMatrix(
+            left_mtx, left_dist, (1920, 1080), 0, (1920, 1080)
+        )
+        self.optimal_right_mtx, self.optimal_right_roi = cv2.getOptimalNewCameraMatrix(
+            right_mtx, right_dist_coeffs, (1920, 1080), 0, (1920, 1080)
+        )
+
+        self.stereo_maps_set = True
+        self.__logger.info("Stereo rectification maps initialized")
 
     def __show_stream_loop(self):
         cv2.namedWindow("Stream", cv2.WINDOW_NORMAL)
