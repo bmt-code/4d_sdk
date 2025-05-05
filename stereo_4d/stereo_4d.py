@@ -679,6 +679,7 @@ class Stereo4DCameraHandler:
             (1920, 1080),  # Assuming image resolution TODO
             extrinsic_matrix[:3, :3],  # Rotation matrix
             extrinsic_matrix[:3, 3],  # Translation vector
+            alpha=0,
         )
         self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
             left_mtx, left_dist, R1, P1, (1920, 1080), cv2.CV_16SC2
