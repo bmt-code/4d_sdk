@@ -130,6 +130,7 @@ class Stereo4DCameraHandler:
         # external callbacks
         self.__left_camera_info_callback = None
         self.__right_camera_info_callback = None
+        self.__intrinsics_callback = None
         self.__frame_callback = None
 
         # should exit flag to stop the system
@@ -275,6 +276,9 @@ class Stereo4DCameraHandler:
     def set_right_camera_info_callback(self, callback):
         self.__right_camera_info_callback = callback
 
+    def set_intrinsics_callback(self, callback):
+        self.__intrinsics_callback = callback
+
     def set_frame_callback(self, callback):
         self.__frame_callback = callback
 
@@ -299,7 +303,7 @@ class Stereo4DCameraHandler:
 
     def __is_frame_drop_ok(self):
         """Check if the frame drop percentage is higher than 50%"""
-        if self.__frame_drop_percent > 50:
+        if self.__frame_drop_percent > 50 and self.__frame_count_total > 100:
             self.__logger.error(
                 f"Frame drop percentage is too high: {self.__frame_drop_percent:.2f}%"
             )
@@ -596,6 +600,10 @@ class Stereo4DCameraHandler:
             self.__left_camera_info_callback(self.left_camera_info.copy())
         if self.__right_camera_info_callback:
             self.__right_camera_info_callback(self.right_camera_info.copy())
+        if self.__intrinsics_callback:
+            self.__intrinsics_callback(
+                self.left_camera_info.copy(), self.right_camera_info.copy()
+            )
 
     def __handle_camera_status(self):
 
