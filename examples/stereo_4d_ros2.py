@@ -100,7 +100,7 @@ class FourDCameraROS2(Node):
 
     def setup_camera(self):
         # Initialize FourDCameraHandler
-        self.camera_handler = Stereo4DCameraHandler(show_stream=False, rectify_internally=True)
+        self.camera_handler = Stereo4DCameraHandler(show_stream=False, rectify_internally=False)
         self.camera_handler.set_frame_callback(self.handle_frame_event)
         self.camera_handler.set_intrinsics_callback(self.handle_intrinsics_event)
 
