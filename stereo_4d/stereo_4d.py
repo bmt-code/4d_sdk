@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 from threading import Timer
+from typing import Tuple
 
 import cv2
 import numpy as np
@@ -53,6 +54,7 @@ class Stereo4DCameraInfo:
         self.r = None
         self.p = None
         self.extrinsic_matrix = None
+        self.rect_matrix = None
 
     def copy(self):
         """Create a copy of the camera info"""
@@ -64,17 +66,27 @@ class Stereo4DCameraInfo:
         __copy.k = self.k.copy() if self.k is not None else None
         __copy.r = self.r.copy() if self.r is not None else None
         __copy.p = self.p.copy() if self.p is not None else None
+        __copy.extrinsic_matrix = (
+            self.extrinsic_matrix.copy() if self.extrinsic_matrix is not None else None
+        )
+        __copy.rect_matrix = (
+            self.rect_matrix.copy() if self.rect_matrix is not None else None
+        )
         return __copy
 
 
 class Stereo4DCameraHandler:
-    def __init__(self, ip="172.31.1.77", port=5555, show_stream=False, rectify_internally=False):
+    def __init__(
+        self, ip="172.31.1.77", port=5555, show_stream=False, rectify_internally=False
+    ):
 
         # public attributes
         self.ip = ip
         self.port = port
         self.desired_fps = None  # Frames per second
         self.rectify_internally = rectify_internally  # Rectification flag
+
+        self.max_frame_drop_percent = 95.0  # Maximum allowed frame drop percentage
 
         # status variables
         self.__handler_status = "stop"  # stop, start
@@ -256,11 +268,14 @@ class Stereo4DCameraHandler:
 
         return True
 
-    def rectify_stereo_images(self, img_left, img_right):
+    def rectify_stereo_images(
+        self, img_left, img_right
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Rectify stereo images using the precomputed maps and return new camera matrix and distortion coefficients"""
 
         if not self.stereo_maps_set:
             self.__logger.warn("Stereo maps not set, cannot rectify images")
-            return img_left, img_right
+            return img_left, img_right, None, None
 
         rectified_left = cv2.remap(
             img_left, self.map_left_x, self.map_left_y, cv2.INTER_LINEAR
@@ -268,7 +283,12 @@ class Stereo4DCameraHandler:
         rectified_right = cv2.remap(
             img_right, self.map_right_x, self.map_right_y, cv2.INTER_LINEAR
         )
-        return rectified_left, rectified_right
+        return (
+            rectified_left,
+            rectified_right,
+            self.optimal_left_mtx,
+            self.optimal_right_mtx,
+        )
 
     def set_left_camera_info_callback(self, callback):
         self.__left_camera_info_callback = callback
@@ -303,7 +323,10 @@ class Stereo4DCameraHandler:
 
     def __is_frame_drop_ok(self):
         """Check if the frame drop percentage is higher than 50%"""
-        if self.__frame_drop_percent > 50 and self.__frame_count_total > 100:
+        if (
+            self.__frame_drop_percent > self.max_frame_drop_percent
+            and self.__frame_count_total > 100
+        ):
             self.__logger.error(
                 f"Frame drop percentage is too high: {self.__frame_drop_percent:.2f}%"
             )
@@ -333,7 +356,10 @@ class Stereo4DCameraHandler:
 
             if self.__handler_status == "starting":
                 # check if camera status was received
-                if self.__is_status_within_range() and not self.__connected_event.is_set():
+                if (
+                    self.__is_status_within_range()
+                    and not self.__connected_event.is_set()
+                ):
                     self.__connected_event.set()
                     self.__logger.info("Camera started successfully!")
                     continue
@@ -583,17 +609,28 @@ class Stereo4DCameraHandler:
         self.left_camera_info.height = h
         self.left_camera_info.k = np.array(intrinsics["left_camera_matrix"])
         self.left_camera_info.d = np.array(intrinsics["left_distortion_coefficients"])
-        self.left_camera_info.extrinsic_matrix = np.array(intrinsics["extrinsic_matrix"])
+        self.left_camera_info.extrinsic_matrix = np.array(
+            intrinsics["extrinsic_matrix"]
+        )
+        self.left_camera_info.rect = np.array(intrinsics["left_camera_rect_matrix"])
 
         self.right_camera_info = Stereo4DCameraInfo()
         self.right_camera_info.width = w
         self.right_camera_info.height = h
         self.right_camera_info.k = np.array(intrinsics["right_camera_matrix"])
         self.right_camera_info.d = np.array(intrinsics["right_distortion_coefficients"])
+        self.right_camera_info.extrinsic_matrix = np.array(
+            intrinsics["extrinsic_matrix"]
+        )
+        self.right_camera_info.rect = np.array(intrinsics["right_camera_rect_matrix"])
 
         if not self.intrinsics_set:
             self.intrinsics_set = True
             self.__logger.info("Intrinsics set successfully")
+            self.__init_stereo_rectify_maps()
+
+        if not self.stereo_maps_set:
+            self.__logger.info("Stereo maps not set, initializing stereo maps")
             self.__init_stereo_rectify_maps()
 
         if self.__left_camera_info_callback:
@@ -662,7 +699,7 @@ class Stereo4DCameraHandler:
 
     def __init_stereo_rectify_maps(self):
         if not self.intrinsics_set:
-            self.logger.info("Intrinsics not set, waiting for intrinsics")
+            self.__logger.info("Intrinsics not set, waiting for intrinsics")
             return
 
         left_mtx = self.left_camera_info.k
@@ -694,6 +731,26 @@ class Stereo4DCameraHandler:
         self.optimal_right_mtx, self.optimal_right_roi = cv2.getOptimalNewCameraMatrix(
             right_mtx, right_dist_coeffs, (1920, 1080), 0, (1920, 1080)
         )
+
+        self.__logger.info(
+            "Stereo rectification maps initialized successfully with the following parameters:"
+        )
+        self.__logger.info(f"Left Camera Matrix: {self.optimal_left_mtx}")
+        self.__logger.info(f"Right Camera Matrix: {self.optimal_right_mtx}")
+        self.__logger.info(f"Left ROI: {self.optimal_left_roi}")
+        self.__logger.info(f"Right ROI: {self.optimal_right_roi}")
+
+        # Calculate and log the field of view (FOV) for both cameras
+        left_fovx, left_fovy, _, _, _ = cv2.calibrationMatrixValues(
+            self.optimal_left_mtx, (1920, 1080), 1920, 1080
+        )
+        right_fovx, right_fovy, _, _, _ = cv2.calibrationMatrixValues(
+            self.optimal_right_mtx, (1920, 1080), 1920, 1080
+        )
+        self.__logger.info(f"Left Camera FOVx: {left_fovx:.2f} degrees")
+        self.__logger.info(f"Left Camera FOVy: {left_fovy:.2f} degrees")
+        self.__logger.info(f"Right Camera FOVx: {right_fovx:.2f} degrees")
+        self.__logger.info(f"Right Camera FOVy: {right_fovy:.2f} degrees")
 
         self.stereo_maps_set = True
         self.__logger.info("Stereo rectification maps initialized")
