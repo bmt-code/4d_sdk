@@ -1,6 +1,7 @@
 import threading
 import time
 
+import traceback
 import cv2
 import numpy as np
 import rclpy
@@ -16,12 +17,31 @@ from tf2_ros import TransformBroadcaster
 from stereo_4d import Stereo4DCameraHandler, Stereo4DCameraInfo
 
 
+def measure_execution_time(func):
+    """Decorator to measure the execution time of a function."""
+
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        args[0].get_logger().info(
+            f"Execution time for {func.__name__}: {execution_time * 1000:.2f} ms"
+        )
+        return result
+
+    return wrapper
+
+
 class FourDCameraROS2(Node):
     def __init__(self):
         super().__init__("stereo_4d_node")
 
         self.logger = self.get_logger()
         self.logger.info("Initializing 4D Camera Node")
+
+        self.should_publish_raw = False
+        self.should_publish_compressed = True
 
         # stereo maps
         self.map_left_x = None
@@ -56,6 +76,18 @@ class FourDCameraROS2(Node):
         )
         self.right_camera_info_publisher = self.create_publisher(
             CameraInfo, "camera/fourd/right/camera_info", 2
+        )
+        self.left_frame_publisher = self.create_publisher(
+            Image, "camera/fourd/left/image_raw", 2
+        )
+        self.right_frame_publisher = self.create_publisher(
+            Image, "camera/fourd/right/image_raw", 2
+        )
+        self.left_compressed_frame_publisher = self.create_publisher(
+            CompressedImage, "camera/fourd/left/image_raw/compressed", 2
+        )
+        self.right_compressed_frame_publisher = self.create_publisher(
+            CompressedImage, "camera/fourd/right/image_raw/compressed", 2
         )
 
         self.diagnostics_publisher = self.create_publisher(
@@ -100,7 +132,9 @@ class FourDCameraROS2(Node):
 
     def setup_camera(self):
         # Initialize FourDCameraHandler
-        self.camera_handler = Stereo4DCameraHandler(show_stream=False, rectify_internally=False)
+        self.camera_handler = Stereo4DCameraHandler(
+            show_stream=False, rectify_internally=False
+        )
         self.camera_handler.set_frame_callback(self.handle_frame_event)
         self.camera_handler.set_intrinsics_callback(self.handle_intrinsics_event)
 
@@ -120,17 +154,57 @@ class FourDCameraROS2(Node):
         self.current_frame = frame
         self.frame_event.set()
 
-    def handle_intrinsics_event(self, left_intrinsics: Stereo4DCameraInfo, right_intrinsics: Stereo4DCameraInfo):
+    def handle_intrinsics_event(
+        self, left_intrinsics: Stereo4DCameraInfo, right_intrinsics: Stereo4DCameraInfo
+    ):
         self.logger.info("Intrinsics received", once=True)
         self.left_intrinsics: Stereo4DCameraInfo = left_intrinsics
         self.right_intrinsics: Stereo4DCameraInfo = right_intrinsics
+
+    def publish_compressed_images(self, curr_image, left_image, right_image):
+        # Publish left compressed image
+        # left_compressed_msg = self.bridge.cv2_to_compressed_imgmsg(
+        #     left_image, dst_format="jpeg"
+        # )
+        # left_compressed_msg.header.stamp = self.get_clock().now().to_msg()
+        # self.left_compressed_frame_publisher.publish(left_compressed_msg)
+
+        # # Publish right compressed image
+        # right_compressed_msg = self.bridge.cv2_to_compressed_imgmsg(
+        #     right_image, dst_format="jpeg"
+        # )
+        # right_compressed_msg.header.stamp = self.get_clock().now().to_msg()
+        # self.right_compressed_frame_publisher.publish(right_compressed_msg)
+
+        # Publish combined stereo image
+        compressed_msg = self.bridge.cv2_to_compressed_imgmsg(
+            curr_image, dst_format="jpeg"
+        )
+        compressed_msg.header.stamp = self.get_clock().now().to_msg()
+        self.compressed_frame_publisher.publish(compressed_msg)
+
+    def publish_raw_images(self, curr_image, left_image, right_image):
+        # Publish left raw image
+        left_msg = self.bridge.cv2_to_imgmsg(left_image, encoding="bgr8")
+        left_msg.header.stamp = self.get_clock().now().to_msg()
+        self.left_frame_publisher.publish(left_msg)
+
+        # Publish right raw image
+        right_msg = self.bridge.cv2_to_imgmsg(right_image, encoding="bgr8")
+        right_msg.header.stamp = self.get_clock().now().to_msg()
+        self.right_frame_publisher.publish(right_msg)
+
+        # Publish combined stereo image
+        msg = self.bridge.cv2_to_imgmsg(curr_image, encoding="bgr8")
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.frame_publisher.publish(msg)
 
     def publish_frame_loop(self):
 
         while rclpy.ok():
             img_received = self.frame_event.wait(timeout=5.0)
 
-            # if no image received for mmore than 5 seconds, skip
+            # if no image received for more than 5 seconds, skip
             if not img_received:
                 self.logger.info("No image received, skipping")
                 continue
@@ -140,43 +214,34 @@ class FourDCameraROS2(Node):
             if self.current_frame is None or self.current_frame.image is None:
                 continue
 
-            # Stereo rectify the images based on intrinsics
-            # if self.camera_handler.stereo_maps_set:
-
-            #     # Apply rectification to the current frame
-            #     left_image = self.current_frame.image[
-            #         :, : self.current_frame.image.shape[1] // 2
-            #     ]
-            #     right_image = self.current_frame.image[
-            #         :, self.current_frame.image.shape[1] // 2 :
-            #     ]
-
-            #     # Rectify the images
-            #     left_rectified, right_rectified = self.camera_handler.rectify_stereo_images(
-            #         left_image, right_image
-            #     )
-
-            #     curr_image = np.hstack((left_rectified, right_rectified))
-            # else:
-            #     self.logger.info(
-            #         "Stereo maps not set, using original image",
-            #         throttle_duration_sec=5.0,
-            #     )
-            #     curr_image = self.current_frame.image
+            # Extract left and right images from the stereo image
+            # Convert stereo images to desired format
             curr_image = self.current_frame.image
 
-            # Publish compressed image
-            # Publish compressed image
-            compressed_msg = self.bridge.cv2_to_compressed_imgmsg(
-                curr_image, dst_format="jpeg"
-            )
-            compressed_msg.header.stamp = self.get_clock().now().to_msg()
-            self.compressed_frame_publisher.publish(compressed_msg)
+            left_image = curr_image[
+                :, : curr_image.shape[1] // 2
+            ]
+            right_image = curr_image[
+                :, curr_image.shape[1] // 2 :
+            ]
 
-            # Publish raw image
-            msg = self.bridge.cv2_to_imgmsg(curr_image)
-            msg.header.stamp = self.get_clock().now().to_msg()
-            self.frame_publisher.publish(msg)
+            # rectify images if stereo maps are set
+            if self.camera_handler.stereo_maps_set:
+                left_image, right_image = self.camera_handler.rectify_stereo_images(left_image, right_image)
+                curr_image = np.concatenate((left_image, right_image), axis=1)
+
+
+            # Convert images to uint8 using numpy
+            curr_image = np.clip(curr_image, 0, 255).astype(np.uint8)
+            left_image = np.clip(left_image, 0, 255).astype(np.uint8)
+            right_image = np.clip(right_image, 0, 255).astype(np.uint8)
+
+
+            if self.should_publish_compressed:
+                self.publish_compressed_images(curr_image, left_image, right_image)
+
+            if self.should_publish_raw:
+                self.publish_raw_images(curr_image, left_image, right_image)
 
     def publish_intrinsics(self):
         try:
@@ -184,11 +249,6 @@ class FourDCameraROS2(Node):
             if not self.camera_handler.intrinsics_set:
                 self.logger.info("Intrinsics not set, waiting for intrinsics")
                 return
-
-            if not self.camera_handler.stereo_maps_set:
-                self.logger.info("Initializing stereo maps")
-                self.init_stereo_rectify_maps()
-                self.logger.info("Stereo maps initialized")
 
             # Publish left camera info
             left_camera_info = CameraInfo()
@@ -215,21 +275,11 @@ class FourDCameraROS2(Node):
             transform.header.stamp = self.get_clock().now().to_msg()
             transform.header.frame_id = "left_camera"
             transform.child_frame_id = "right_camera"
-            # transform.transform.translation.x = self.left_intrinsics.extrinsic_matrix[0, 3]
-            # transform.transform.translation.y = self.left_intrinsics.extrinsic_matrix[1, 3]
-            # transform.transform.translation.z = self.left_intrinsics.extrinsic_matrix[2, 3]
-
-            # # Convert rotation matrix to quaternion
-            # rotation_matrix = self.left_intrinsics.extrinsic_matrix[:3, :3]
-            # quaternion = self.rotation_matrix_to_quaternion(rotation_matrix)
-            # transform.transform.rotation.x = quaternion[0]
-            # transform.transform.rotation.y = quaternion[1]
-            # transform.transform.rotation.z = quaternion[2]
-            # transform.transform.rotation.w = quaternion[3]
 
             self.tf_broadcaster.sendTransform(transform)
         except Exception as e:
             self.get_logger().error(f"Failed to publish intrinsics: {e}")
+            traceback.print_exc()
 
     def publish_diagnostics(self):
 
