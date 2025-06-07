@@ -11,7 +11,7 @@ from sensor_msgs.msg import CompressedImage, Image
 
 # --- Configuration ---
 DEFAULT_RAW_IMAGE_TOPIC = "/image_raw"
-DEFAULT_COMPRESSED_IMAGE_TOPIC = "/image_raw/compressed"
+DEFAULT_COMPRESSED_IMAGE_TOPIC = "/camera/fourd/stereo/raw/compressed"
 
 RAW_WINDOW_NAME = "Raw Image"
 COMPRESSED_WINDOW_NAME = "Compressed Image"

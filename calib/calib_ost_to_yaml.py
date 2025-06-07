@@ -1,5 +1,6 @@
 import numpy as np
 import yaml
+import os
 
 
 def parse_stereo_calib(file_path):
@@ -94,8 +95,12 @@ def save_calibration(file_path, calibration_data):
 
 
 if __name__ == "__main__":
+    this_file_path = os.path.abspath(__file__)
+    this_dir = os.path.dirname(this_file_path)
     input_path = "stereo_calib.txt"
     output_path = "stereo_calibration.yaml"
+    input_path = os.path.join(this_dir, input_path)
+    output_path = os.path.join(this_dir, output_path)
 
     print("Parsing stereo calibration data...")
     left, right, self_T, self_R = parse_stereo_calib(input_path)
