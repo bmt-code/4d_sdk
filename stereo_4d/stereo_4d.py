@@ -735,10 +735,11 @@ class Stereo4DCameraHandler:
         self.__logger.info(
             "Stereo rectification maps initialized successfully with the following parameters:"
         )
-        self.__logger.info(f"Left Camera Matrix: {self.optimal_left_mtx}")
-        self.__logger.info(f"Right Camera Matrix: {self.optimal_right_mtx}")
-        self.__logger.info(f"Left ROI: {self.optimal_left_roi}")
-        self.__logger.info(f"Right ROI: {self.optimal_right_roi}")
+        self.__logger.info(f"Left Raw Matrix:\n{np.array2string(left_mtx, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Right Raw Matrix:\n{np.array2string(right_mtx, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Left Rect Matrix:\n{np.array2string(self.optimal_left_mtx, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Right Rect Matrix:\n{np.array2string(self.optimal_right_mtx, precision=2, suppress_small=True)}")
+        self.__logger.info(f"ROIs - Left: {self.optimal_left_roi}, Right: {self.optimal_right_roi}")
 
         # Calculate and log the field of view (FOV) for both cameras
         left_fovx, left_fovy, _, _, _ = cv2.calibrationMatrixValues(
@@ -747,10 +748,7 @@ class Stereo4DCameraHandler:
         right_fovx, right_fovy, _, _, _ = cv2.calibrationMatrixValues(
             self.optimal_right_mtx, (1920, 1080), 1920, 1080
         )
-        self.__logger.info(f"Left Camera FOVx: {left_fovx:.2f} degrees")
-        self.__logger.info(f"Left Camera FOVy: {left_fovy:.2f} degrees")
-        self.__logger.info(f"Right Camera FOVx: {right_fovx:.2f} degrees")
-        self.__logger.info(f"Right Camera FOVy: {right_fovy:.2f} degrees")
+        self.__logger.info(f"Left FOV: {left_fovx:.1f}x{left_fovy:.1f} deg (HxV), Right FOV: {right_fovx:.1f}x{right_fovy:.1f} deg (HxV)")
 
         self.stereo_maps_set = True
         self.__logger.info("Stereo rectification maps initialized")
