@@ -20,5 +20,5 @@ python3 stereo_4d_ros2.py
 ## Launch the calibration tool
 
 ```bash
-ros2 run camera_calibration cameracalibrator --no-service-check --approximate 0.1 --size 8x6 --square 0.03 right:=camera/fourd/right/image_raw left:=camera/fourd/left/image_raw right_camera:=camera/fourd/left left_camera:=camera/fourd/left
+ros2 run camera_calibration cameracalibrator --no-service-check --approximate 0.1 --size 8x6 --square 0.03 right:=stereo_4d/right_raw/image left:=stereo_4d/left_raw/image right_camera:=stereo_4d/right_raw left_camera:=stereo_4d/left_raw --fix-principal-point
 ```
