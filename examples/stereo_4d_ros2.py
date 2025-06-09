@@ -255,7 +255,6 @@ class FourDCameraROS2(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         self.stereo_raw_publisher.publish(msg)
 
-    @measure_execution_time
     def publish_rect_compressed_images(self, curr_image, left_image, right_image):
         # Publish left rectified compressed image
         left_rect_compressed_msg = self.bridge.cv2_to_compressed_imgmsg(
