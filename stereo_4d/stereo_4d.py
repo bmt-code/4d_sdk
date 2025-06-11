@@ -5,7 +5,7 @@ import threading
 import time
 import traceback
 from threading import Timer
-from typing import Tuple
+from typing import Tuple, Dict
 
 import cv2
 import numpy as np
@@ -491,9 +491,7 @@ class Stereo4DCameraHandler:
         self.sub_socket.connect(f"tcp://{self.ip}:5555")
 
         # Set up topic filters
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "frame")
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "intrinsics")
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "status")
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
         self.__start_timers()
         self.__logger.debug("Subscriber socket setup complete")
@@ -534,15 +532,15 @@ class Stereo4DCameraHandler:
             self.__logger.error("Failed to decode string")
             return None
 
-    def __handle_frame_message(self, parts):
+    def __handle_frame_message(self, msg_json: Dict):
 
         self.__frame_count_total += 1
 
         # handle timestamp
-        timestamp = parts[0].decode()
+        timestamp = msg_json.get("timestamp", None)
 
         # decode image
-        image_bytes = parts[1]
+        image_bytes = bytes.fromhex(msg_json.get("data", ""))
         image = self.__decode_frame(image_bytes)
         if image is None:
             self.__frame_drop_count += 1
@@ -589,15 +587,12 @@ class Stereo4DCameraHandler:
         if self.__frame_callback:
             self.__frame_callback(frame.copy())
 
-    def __handle_intrinsics_message(self, parts):
+    def __handle_intrinsics_message(self, msg_json: Dict):
         # handle timestamp
-        intrinsics = self.__decode_string(parts[0])
+        intrinsics = msg_json.get("data", None)
         if intrinsics is None:
             self.__logger.error("Failed to decode intrinsics")
             return
-
-        # loads the intrinsics
-        intrinsics = json.loads(intrinsics)
 
         self.__intrinsics_count += 1
 
@@ -647,31 +642,24 @@ class Stereo4DCameraHandler:
         # Update last status time
         self.__last_status_time = time.time()
 
-    def __handle_message(self, parts):
-        # check if length of parts is more than 0
-        if not parts or len(parts) == 0:
-            return
-
+    def __handle_message(self, msg_json: Dict):
         try:
             # Get topic and validate it
-            topic = self.__decode_string(parts[0])
-            if topic not in ["frame", "intrinsics", "status"]:
-                self.__logger.warn(f"Received message with invalid topic: {topic}")
+            msg_type = msg_json.get("msg_type", "")
+            if msg_type not in ["frame", "intrinsics", "status"]:
+                self.__logger.warn(f"Received message with invalid topic: {msg_type}")
                 return
 
             # Handle message based on topic
-            if topic == "frame":
-                if len(parts) >= 3:  # Ensure we have enough parts for frame message
-                    self.__handle_frame_message(parts[1:])
-            elif topic == "intrinsics":
-                if (
-                    len(parts) >= 2
-                ):  # Ensure we have enough parts for intrinsics message
-                    self.__handle_intrinsics_message(parts[1:])
-            elif topic == "status":
+            if msg_type == "frame":
+                self.__handle_frame_message(msg_json)
+            elif msg_type == "intrinsics":
+                self.__handle_intrinsics_message(msg_json)
+            elif msg_type == "status":
                 self.__handle_camera_status()
         except Exception as e:
             self.__logger.error(f"Error handling message: {e}")
+            traceback.print_exc()
 
     def __receiver(self):
         try:
@@ -680,12 +668,9 @@ class Stereo4DCameraHandler:
                 return
 
             # Use a small timeout to prevent blocking
-            parts = self.sub_socket.recv_multipart(track=True)
-
-            if (
-                parts and not self.__should_exit
-            ):  # Check should_exit again after receive
-                self.__handle_message(parts)
+            msg_json = self.sub_socket.recv_json()
+            if msg_json and not self.__should_exit:  # Check should_exit again after receive
+                self.__handle_message(msg_json)
         except zmq.error.ContextTerminated:
             return
         except zmq.error.Again:
@@ -697,41 +682,55 @@ class Stereo4DCameraHandler:
             time.sleep(0.1)  # Sleep a bit longer on error
             return
 
-    def __init_stereo_rectify_maps(self):
+    def __init_stereo_rectify_maps(self, alpha=0):
         if not self.intrinsics_set:
             self.__logger.info("Intrinsics not set, waiting for intrinsics")
             return
 
         left_mtx = self.left_camera_info.k
         right_mtx = self.right_camera_info.k
-        left_dist = self.left_camera_info.d
+        left_dist_coeffs = self.left_camera_info.d
         right_dist_coeffs = self.right_camera_info.d
         extrinsic_matrix = self.left_camera_info.extrinsic_matrix
 
         R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
             left_mtx,
-            left_dist,
+            left_dist_coeffs,
             right_mtx,
             right_dist_coeffs,
             (1920, 1080),  # Assuming image resolution TODO
             extrinsic_matrix[:3, :3],  # Rotation matrix
             extrinsic_matrix[:3, 3],  # Translation vector
-            alpha=0,
+            alpha=alpha,
+            flags=cv2.CALIB_ZERO_DISPARITY,
+            newImageSize=(1920, 1080),  # Assuming image resolution TODO
         )
+
+        self.__logger.info("Q matrix:")
+        self.__logger.info(f"{Q}")
+
+        myQ = np.array(
+            [
+                [1, 0, 0, -left_mtx[0, 2]],
+                [0, 1, 0, -left_mtx[1, 2]],
+                [0, 0, 0, left_mtx[0, 0]],
+                [0, 0, 1 / 0.3, 0],
+                # Assuming a baseline of 0.3 meters, adjust as needed
+            ]
+        )
+
+        self.__logger.info("Custom Q matrix:")
+        self.__logger.info(f"{myQ}")
+
         self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
-            left_mtx, left_dist, R1, P1, (1920, 1080), cv2.CV_16SC2
+            left_mtx, left_dist_coeffs, R1, P1, (1920, 1080), cv2.CV_16SC2
         )
         self.map_right_x, self.map_right_y = cv2.initUndistortRectifyMap(
             right_mtx, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
         )
 
-        self.optimal_left_mtx, self.optimal_left_roi = cv2.getOptimalNewCameraMatrix(
-            left_mtx, left_dist, (1920, 1080), 0, (1920, 1080)
-        )
-        self.optimal_right_mtx, self.optimal_right_roi = cv2.getOptimalNewCameraMatrix(
-            right_mtx, right_dist_coeffs, (1920, 1080), 0, (1920, 1080)
-        )
-
+        self.optimal_left_mtx = P1[:3, :3]
+        self.optimal_right_mtx = P2[:3, :3]
         self.__logger.info(
             "Stereo rectification maps initialized successfully with the following parameters:"
         )

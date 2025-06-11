@@ -62,7 +62,7 @@ class StereoCalibration:
         T = np.array(calibration_data["T"])
 
         # Load a sample image pair
-        nested_img = cv2.imread(self.nested_images_paths[150])
+        nested_img = cv2.imread(self.nested_images_paths[len(self.nested_images_paths) // 2])
         imgL = nested_img[:, : nested_img.shape[1] // 2]
         imgR = nested_img[:, nested_img.shape[1] // 2 :]
 
@@ -176,7 +176,7 @@ class StereoCalibration:
 
     def stereo_calibrate(self, mtxL, distL, mtxR, distR, image_shape):
         logging.info("Performing stereo calibration...")
-        retS, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
+        retS, mtxL, distL, mtxR, distR, R, T, E, F = cv2.stereoCalibrate(
             self.objpoints,
             self.imgpoints_left,
             self.imgpoints_right,
@@ -185,11 +185,13 @@ class StereoCalibration:
             mtxR,
             distR,
             image_shape[:2][::-1],
-            criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 100, 1e-5),
-            flags=cv2.CALIB_FIX_INTRINSIC,
+            criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 1000, 1e-5),
+            flags=cv2.CALIB_SAME_FOCAL_LENGTH,
         )
         logging.info(f"Stereo calibration complete with RMS error: {retS} pixels.")
-        return R, T, E, F
+        logging.info(f"Calibration matrices:\nmtxL: {mtxL}\ndistL: {distL}\nmtxR: {mtxR}\ndistR: {distR}")
+        logging.info(f"Rotation matrix R:\n{R}\nTranslation vector T:\n{T}")
+        return mtxL, distL, mtxR, distR, R, T, E, F
 
     def save_calibration(self, mtxL, distL, mtxR, distR, R, T, E, F):
         calibration_data = {
@@ -216,20 +218,28 @@ class StereoCalibration:
         self.detect_corners(objp)
 
         image_shape = cv2.imread(self.nested_images_paths[0]).shape
+        # divide the width by 2 to get the left or right image shape
+        image_shape = (image_shape[0], image_shape[1] // 2, image_shape[2])
         logging.info(f"Image shape detected: {image_shape}")
 
         mtxL, distL, mtxR, distR = self.calibrate_cameras(image_shape)
-        R, T, E, F = self.stereo_calibrate(mtxL, distL, mtxR, distR, image_shape)
+        mtxL, distL, mtxR, distR, R, T, E, F = self.stereo_calibrate(mtxL, distL, mtxR, distR, image_shape)
         self.save_calibration(mtxL, distL, mtxR, distR, R, T, E, F)
 
 
 if __name__ == "__main__":
-    camera_name = "stereo_camera_v0.9"
-    imgs_path = "/home/gss/bmt_ros2_ws/src/cam0.9/*.png"
-    chessboard_size = (8, 6)
-    square_size = 30  # in mm or your unit
+    camera_name = "stereo_camera_v10"
+    imgs_path = "/home/gss/bmt_ros2_ws/src/cam10/*.png"
+    chessboard_size = (9, 6)
+    square_size = 0.0262  # in m or your unit
 
     calibration = StereoCalibration(
         camera_name, imgs_path, chessboard_size, square_size
     )
     calibration.run()
+
+    with open(calibration.calibration_file, "r") as f:
+        calibration_data = yaml.safe_load(f)
+    calibration.generate_epipolar_lines(calibration_data)
+    logging.info("Stereo calibration process completed successfully.")
+    cv2.destroyAllWindows()
