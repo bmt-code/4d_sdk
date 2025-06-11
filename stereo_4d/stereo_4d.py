@@ -100,9 +100,9 @@ class Stereo4DCameraHandler:
         self.map_left_y = None
         self.map_right_x = None
         self.map_right_y = None
-        self.optimal_left_mtx = None
+        self.left_rect_mtx = None
         self.optimal_left_roi = None
-        self.optimal_right_mtx = None
+        self.right_rect_mtx = None
         self.optimal_right_roi = None
         self.intrinsics_set = False
         self.current_intrinsics = None
@@ -269,13 +269,21 @@ class Stereo4DCameraHandler:
         return True
 
     def rectify_stereo_images(
-        self, img_left, img_right
+        self, img_left: np.ndarray, img_right: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Rectify stereo images using the precomputed maps and return new camera matrix and distortion coefficients"""
 
         if not self.stereo_maps_set:
             self.__logger.warn("Stereo maps not set, cannot rectify images")
-            return img_left, img_right, None, None
+            return img_left, img_right, self.left_rect_mtx, self.right_rect_mtx
+
+        if img_left is None or img_right is None:
+            self.__logger.error("Input images for rectification are None")
+            return img_left, img_right, self.left_rect_mtx, self.right_rect_mtx
+
+        if not self.stereo_maps_set:
+            self.__logger.error("Stereo maps are not set, cannot rectify images")
+            return img_left, img_right, self.left_rect_mtx, self.right_rect_mtx
 
         rectified_left = cv2.remap(
             img_left, self.map_left_x, self.map_left_y, cv2.INTER_LINEAR
@@ -286,8 +294,8 @@ class Stereo4DCameraHandler:
         return (
             rectified_left,
             rectified_right,
-            self.optimal_left_mtx,
-            self.optimal_right_mtx,
+            self.left_rect_mtx,
+            self.right_rect_mtx,
         )
 
     def set_left_camera_info_callback(self, callback):
@@ -729,23 +737,23 @@ class Stereo4DCameraHandler:
             right_mtx, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
         )
 
-        self.optimal_left_mtx = P1[:3, :3]
-        self.optimal_right_mtx = P2[:3, :3]
+        self.left_rect_mtx = P1[:3, :3]
+        self.right_rect_mtx = P2[:3, :3]
         self.__logger.info(
             "Stereo rectification maps initialized successfully with the following parameters:"
         )
         self.__logger.info(f"Left Raw Matrix:\n{np.array2string(left_mtx, precision=2, suppress_small=True)}")
         self.__logger.info(f"Right Raw Matrix:\n{np.array2string(right_mtx, precision=2, suppress_small=True)}")
-        self.__logger.info(f"Left Rect Matrix:\n{np.array2string(self.optimal_left_mtx, precision=2, suppress_small=True)}")
-        self.__logger.info(f"Right Rect Matrix:\n{np.array2string(self.optimal_right_mtx, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Left Rect Matrix:\n{np.array2string(self.left_rect_mtx, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Right Rect Matrix:\n{np.array2string(self.right_rect_mtx, precision=2, suppress_small=True)}")
         self.__logger.info(f"ROIs - Left: {self.optimal_left_roi}, Right: {self.optimal_right_roi}")
 
         # Calculate and log the field of view (FOV) for both cameras
         left_fovx, left_fovy, _, _, _ = cv2.calibrationMatrixValues(
-            self.optimal_left_mtx, (1920, 1080), 1920, 1080
+            self.left_rect_mtx, (1920, 1080), 1920, 1080
         )
         right_fovx, right_fovy, _, _, _ = cv2.calibrationMatrixValues(
-            self.optimal_right_mtx, (1920, 1080), 1920, 1080
+            self.right_rect_mtx, (1920, 1080), 1920, 1080
         )
         self.__logger.info(f"Left FOV: {left_fovx:.1f}x{left_fovy:.1f} deg (HxV), Right FOV: {right_fovx:.1f}x{right_fovy:.1f} deg (HxV)")
 
