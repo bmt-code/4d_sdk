@@ -27,10 +27,6 @@ class StereoCalibration:
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(message)s",
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler("stereo_calibration.log", mode="w"),
-            ],
         )
 
     def check_existing_calibration(self):
@@ -228,14 +224,25 @@ class StereoCalibration:
 
 
 if __name__ == "__main__":
-    camera_name = "stereo_camera_v10"
-    imgs_path = "/home/gss/bmt_ros2_ws/src/cam10/*.png"
+    camera_name = "stereo_camera_vXX"
+    imgs_path = "/path/to/camXX/*.png"
     chessboard_size = (9, 6)
     square_size = 0.0262  # in m or your unit
 
     calibration = StereoCalibration(
         camera_name, imgs_path, chessboard_size, square_size
     )
+    logging.info("--- Welcome to Stereo Calibration ---")
+    logging.info(f"Camera name: {camera_name}")
+    logging.info(f"Images path: {imgs_path}")
+    logging.info(f"Chessboard size: {chessboard_size}")
+    logging.info(f"Square size: {square_size}")
+
+    confirm = input("Are these settings correct? (y/n): ").strip().lower()
+    if confirm != "y":
+        logging.info("Settings not confirmed. Exiting.")
+        exit(0)
+
     calibration.run()
 
     with open(calibration.calibration_file, "r") as f:
