@@ -100,9 +100,9 @@ class Stereo4DCameraHandler:
         self.map_left_y = None
         self.map_right_x = None
         self.map_right_y = None
-        self.left_rect_mtx = None
+        self.left_rect_k = None
         self.optimal_left_roi = None
-        self.right_rect_mtx = None
+        self.right_rect_k = None
         self.optimal_right_roi = None
         self.intrinsics_set = False
         self.current_intrinsics = None
@@ -275,15 +275,15 @@ class Stereo4DCameraHandler:
 
         if not self.stereo_maps_set:
             self.__logger.warn("Stereo maps not set, cannot rectify images")
-            return img_left, img_right, self.left_rect_mtx, self.right_rect_mtx
+            return img_left, img_right, self.left_rect_k, self.right_rect_k
 
         if img_left is None or img_right is None:
             self.__logger.error("Input images for rectification are None")
-            return img_left, img_right, self.left_rect_mtx, self.right_rect_mtx
+            return img_left, img_right, self.left_rect_k, self.right_rect_k
 
         if not self.stereo_maps_set:
             self.__logger.error("Stereo maps are not set, cannot rectify images")
-            return img_left, img_right, self.left_rect_mtx, self.right_rect_mtx
+            return img_left, img_right, self.left_rect_k, self.right_rect_k
 
         rectified_left = cv2.remap(
             img_left, self.map_left_x, self.map_left_y, cv2.INTER_LINEAR
@@ -294,8 +294,8 @@ class Stereo4DCameraHandler:
         return (
             rectified_left,
             rectified_right,
-            self.left_rect_mtx,
-            self.right_rect_mtx,
+            self.left_rect_k,
+            self.right_rect_k,
         )
 
     def set_left_camera_info_callback(self, callback):
@@ -615,7 +615,6 @@ class Stereo4DCameraHandler:
         self.left_camera_info.extrinsic_matrix = np.array(
             intrinsics["extrinsic_matrix"]
         )
-        self.left_camera_info.rect = np.array(intrinsics["left_camera_rect_matrix"])
 
         self.right_camera_info = Stereo4DCameraInfo()
         self.right_camera_info.width = w
@@ -625,7 +624,6 @@ class Stereo4DCameraHandler:
         self.right_camera_info.extrinsic_matrix = np.array(
             intrinsics["extrinsic_matrix"]
         )
-        self.right_camera_info.rect = np.array(intrinsics["right_camera_rect_matrix"])
 
         if not self.intrinsics_set:
             self.intrinsics_set = True
@@ -695,16 +693,16 @@ class Stereo4DCameraHandler:
             self.__logger.info("Intrinsics not set, waiting for intrinsics")
             return
 
-        left_mtx = self.left_camera_info.k
-        right_mtx = self.right_camera_info.k
+        left_k = self.left_camera_info.k
+        right_k = self.right_camera_info.k
         left_dist_coeffs = self.left_camera_info.d
         right_dist_coeffs = self.right_camera_info.d
         extrinsic_matrix = self.left_camera_info.extrinsic_matrix
 
         R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-            left_mtx,
+            left_k,
             left_dist_coeffs,
-            right_mtx,
+            right_k,
             right_dist_coeffs,
             (1920, 1080),  # Assuming image resolution TODO
             extrinsic_matrix[:3, :3],  # Rotation matrix
@@ -719,9 +717,9 @@ class Stereo4DCameraHandler:
 
         myQ = np.array(
             [
-                [1, 0, 0, -left_mtx[0, 2]],
-                [0, 1, 0, -left_mtx[1, 2]],
-                [0, 0, 0, left_mtx[0, 0]],
+                [1, 0, 0, -left_k[0, 2]],
+                [0, 1, 0, -left_k[1, 2]],
+                [0, 0, 0, left_k[0, 0]],
                 [0, 0, 1 / 0.3, 0],
                 # Assuming a baseline of 0.3 meters, adjust as needed
             ]
@@ -731,29 +729,29 @@ class Stereo4DCameraHandler:
         self.__logger.info(f"{myQ}")
 
         self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
-            left_mtx, left_dist_coeffs, R1, P1, (1920, 1080), cv2.CV_16SC2
+            left_k, left_dist_coeffs, R1, P1, (1920, 1080), cv2.CV_16SC2
         )
         self.map_right_x, self.map_right_y = cv2.initUndistortRectifyMap(
-            right_mtx, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
+            right_k, right_dist_coeffs, R2, P2, (1920, 1080), cv2.CV_16SC2
         )
 
-        self.left_rect_mtx = P1[:3, :3]
-        self.right_rect_mtx = P2[:3, :3]
+        self.left_rect_k = P1[:3, :3]
+        self.right_rect_k = P2[:3, :3]
         self.__logger.info(
             "Stereo rectification maps initialized successfully with the following parameters:"
         )
-        self.__logger.info(f"Left Raw Matrix:\n{np.array2string(left_mtx, precision=2, suppress_small=True)}")
-        self.__logger.info(f"Right Raw Matrix:\n{np.array2string(right_mtx, precision=2, suppress_small=True)}")
-        self.__logger.info(f"Left Rect Matrix:\n{np.array2string(self.left_rect_mtx, precision=2, suppress_small=True)}")
-        self.__logger.info(f"Right Rect Matrix:\n{np.array2string(self.right_rect_mtx, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Left Raw Matrix:\n{np.array2string(left_k, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Right Raw Matrix:\n{np.array2string(right_k, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Left Rect Matrix:\n{np.array2string(self.left_rect_k, precision=2, suppress_small=True)}")
+        self.__logger.info(f"Right Rect Matrix:\n{np.array2string(self.right_rect_k, precision=2, suppress_small=True)}")
         self.__logger.info(f"ROIs - Left: {self.optimal_left_roi}, Right: {self.optimal_right_roi}")
 
         # Calculate and log the field of view (FOV) for both cameras
         left_fovx, left_fovy, _, _, _ = cv2.calibrationMatrixValues(
-            self.left_rect_mtx, (1920, 1080), 1920, 1080
+            self.left_rect_k, (1920, 1080), 1920, 1080
         )
         right_fovx, right_fovy, _, _, _ = cv2.calibrationMatrixValues(
-            self.right_rect_mtx, (1920, 1080), 1920, 1080
+            self.right_rect_k, (1920, 1080), 1920, 1080
         )
         self.__logger.info(f"Left FOV: {left_fovx:.1f}x{left_fovy:.1f} deg (HxV), Right FOV: {right_fovx:.1f}x{right_fovy:.1f} deg (HxV)")
 
