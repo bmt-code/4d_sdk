@@ -3,7 +3,7 @@ import time
 import cv2
 import os
 
-folder_path = "cam10"  # Replace with your folder path
+folder_path = "camXX"  # Replace with your folder path
 
 
 def save_frame(frame: Stereo4DFrame):
