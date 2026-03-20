@@ -110,6 +110,9 @@ class StereoCalibration:
 
     def process_image(self, nested_img_path, objp):
         nested_img = cv2.imread(nested_img_path)
+        if nested_img is None:
+            logging.warning(f"Failed to read image: {nested_img_path}")
+            return None
         imgL = nested_img[:, : nested_img.shape[1] // 2]
         imgR = nested_img[:, nested_img.shape[1] // 2 :]
         imgL = cv2.cvtColor(imgL, cv2.COLOR_BGR2GRAY)
