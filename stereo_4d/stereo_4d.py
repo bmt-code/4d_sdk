@@ -564,7 +564,7 @@ class Stereo4DCameraHandler:
         if self.rectify_internally and self.stereo_maps_set:
             # Decode the image into left and right images
             left_image = image[:, : image.shape[1] // 2]
-            right_image = image[:, image.shape[1] // 2 :]
+            right_image = image[:, image.shape[1] // 2:]
 
             # Rectify the stereo images
             left_image, right_image = self.rectify_stereo_images(
@@ -715,19 +715,6 @@ class Stereo4DCameraHandler:
         self.__logger.info("Q matrix:")
         self.__logger.info(f"{Q}")
 
-        myQ = np.array(
-            [
-                [1, 0, 0, -left_k[0, 2]],
-                [0, 1, 0, -left_k[1, 2]],
-                [0, 0, 0, left_k[0, 0]],
-                [0, 0, 1 / 0.3, 0],
-                # Assuming a baseline of 0.3 meters, adjust as needed
-            ]
-        )
-
-        self.__logger.info("Custom Q matrix:")
-        self.__logger.info(f"{myQ}")
-
         self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
             left_k, left_dist_coeffs, R1, P1, (1920, 1080), cv2.CV_16SC2
         )
@@ -754,6 +741,20 @@ class Stereo4DCameraHandler:
             self.right_rect_k, (1920, 1080), 1920, 1080
         )
         self.__logger.info(f"Left FOV: {left_fovx:.1f}x{left_fovy:.1f} deg (HxV), Right FOV: {right_fovx:.1f}x{right_fovy:.1f} deg (HxV)")
+
+        myQ = np.array(
+            [
+                [1, 0, 0, -left_rect_k[0, 2]],
+                [0, 1, 0, -left_rect_k[1, 2]],
+                [0, 0, 0, left_rect_k[0, 0]],
+                [0, 0, 1 / 0.3, 0],
+                # Assuming a baseline of 0.3 meters, adjust as needed
+            ]
+        )
+
+        self.__logger.info("Baseline:", extrinsic_matrix[0, 3])
+        self.__logger.info("Custom Q matrix: extrinsic_matrix[0, 3]")
+        self.__logger.info(f"{myQ}")
 
         self.stereo_maps_set = True
         self.__logger.info("Stereo rectification maps initialized")
