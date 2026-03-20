@@ -567,7 +567,7 @@ class Stereo4DCameraHandler:
             right_image = image[:, image.shape[1] // 2:]
 
             # Rectify the stereo images
-            left_image, right_image = self.rectify_stereo_images(
+            left_image, right_image, _, _ = self.rectify_stereo_images(
                 left_image, right_image
             )
 
@@ -744,9 +744,9 @@ class Stereo4DCameraHandler:
 
         myQ = np.array(
             [
-                [1, 0, 0, -left_rect_k[0, 2]],
-                [0, 1, 0, -left_rect_k[1, 2]],
-                [0, 0, 0, left_rect_k[0, 0]],
+                [1, 0, 0, -self.left_rect_k[0, 2]],
+                [0, 1, 0, -self.left_rect_k[1, 2]],
+                [0, 0, 0, self.left_rect_k[0, 0]],
                 [0, 0, 1 / 0.3, 0],
                 # Assuming a baseline of 0.3 meters, adjust as needed
             ]
