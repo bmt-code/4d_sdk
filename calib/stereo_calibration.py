@@ -8,6 +8,8 @@ import numpy as np
 import yaml
 from tqdm import tqdm
 
+CALIB_CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 1000, 1e-8)
+
 
 class StereoCalibration:
     def __init__(self, camera_name, imgs_path, chessboard_size, square_size):
@@ -125,6 +127,9 @@ class StereoCalibration:
         )
 
         if retL and retR:
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            cornersL = cv2.cornerSubPix(imgL, cornersL, (11, 11), (-1, -1), criteria)
+            cornersR = cv2.cornerSubPix(imgR, cornersR, (11, 11), (-1, -1), criteria)
             logging.debug(f"Chessboard corners found in image: {nested_img_path}")
             return objp, cornersL, cornersR
         return None
@@ -158,11 +163,27 @@ class StereoCalibration:
 
     def calibrate_cameras(self, image_shape):
         logging.info("Calibrating individual cameras...")
+        # Initialize camera matrix and distortion coefficients
+        mtx_init = np.eye(3, dtype=np.float32)
+        mtx_init[0, 2] = image_shape[1] / 2
+        mtx_init[1, 2] = image_shape[0] / 2
+        dist_init = np.zeros(5, dtype=np.float32)
+
         retL, mtxL, distL, _, _ = cv2.calibrateCamera(
-            self.objpoints, self.imgpoints_left, image_shape[:2][::-1], None, None
+            self.objpoints,
+            self.imgpoints_left,
+            image_shape[:2][::-1],
+            mtx_init,
+            dist_init,
+            criteria=CALIB_CRITERIA,
         )
         retR, mtxR, distR, _, _ = cv2.calibrateCamera(
-            self.objpoints, self.imgpoints_right, image_shape[:2][::-1], None, None
+            self.objpoints,
+            self.imgpoints_right,
+            image_shape[:2][::-1],
+            mtx_init,
+            dist_init,
+            criteria=CALIB_CRITERIA,
         )
         logging.info(f"Left camera calibration complete with RMS error: {retL} pixels.")
         logging.info(
@@ -181,24 +202,24 @@ class StereoCalibration:
             mtxR,
             distR,
             image_shape[:2][::-1],
-            criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 1000, 1e-5),
-            flags=cv2.CALIB_SAME_FOCAL_LENGTH,
+            criteria=CALIB_CRITERIA,
+            flags=cv2.CALIB_FIX_INTRINSIC,
         )
         logging.info(f"Stereo calibration complete with RMS error: {retS} pixels.")
         logging.info(f"Calibration matrices:\nmtxL: {mtxL}\ndistL: {distL}\nmtxR: {mtxR}\ndistR: {distR}")
         logging.info(f"Rotation matrix R:\n{R}\nTranslation vector T:\n{T}")
         return mtxL, distL, mtxR, distR, R, T, E, F
 
-    def save_calibration(self, mtxL, distL, mtxR, distR, R, T, E, F):
+    def save_calibration(self, mtxL, distL, mtxR, distR, R, T, E, F, precision=12):
         calibration_data = {
-            "mtxL": mtxL.tolist(),
-            "distL": distL.tolist(),
-            "mtxR": mtxR.tolist(),
-            "distR": distR.tolist(),
-            "R": R.tolist(),
-            "T": T.tolist(),
-            "E": E.tolist(),
-            "F": F.tolist(),
+            "mtxL": np.round(mtxL, precision).tolist(),
+            "distL": np.round(distL, precision).tolist(),
+            "mtxR": np.round(mtxR, precision).tolist(),
+            "distR": np.round(distR, precision).tolist(),
+            "R": np.round(R, precision).tolist(),
+            "T": np.round(T, precision).tolist(),
+            "E": np.round(E, precision).tolist(),
+            "F": np.round(F, precision).tolist(),
         }
 
         os.makedirs(self.camera_name, exist_ok=True)
@@ -227,7 +248,7 @@ if __name__ == "__main__":
     camera_name = "stereo_camera_vXX"
     imgs_path = "/path/to/camXX/*.png"
     chessboard_size = (9, 6)
-    square_size = 0.0262  # in m or your unit
+    square_size = 0.0265  # in m or your unit
 
     calibration = StereoCalibration(
         camera_name, imgs_path, chessboard_size, square_size
