@@ -159,7 +159,7 @@ def main():
                 mean_dist = np.mean(np.linalg.norm(pts_3d, axis=1))
 
                 label = f"Mean err: {mean_err:.2f} mm | Max err: {max_err:.2f} mm | Distance: {mean_dist:.0f} mm"
-                cv2.putText(img_left, label, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                cv2.putText(img_left, label, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 0, 255), 6)
 
             combined = np.hstack((img_left, img_right))
             cv2.imshow("Calibration Check", combined)

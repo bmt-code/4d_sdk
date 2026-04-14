@@ -24,6 +24,7 @@ class StereoCalibration:
         self.calibration_file = os.path.join(
             self.camera_name, "stereo_calibration.yaml"
         )
+        self.image_shape = None
 
         # Configure logging
         logging.basicConfig(
@@ -60,7 +61,9 @@ class StereoCalibration:
         T = np.array(calibration_data["T"])
 
         # Load a sample image pair
-        nested_img = cv2.imread(self.nested_images_paths[len(self.nested_images_paths) // 2])
+        nested_img = cv2.imread(
+            self.nested_images_paths[len(self.nested_images_paths) // 2]
+        )
         imgL = nested_img[:, : nested_img.shape[1] // 2]
         imgR = nested_img[:, nested_img.shape[1] // 2 :]
 
@@ -113,6 +116,9 @@ class StereoCalibration:
         if nested_img is None:
             logging.warning(f"Failed to read image: {nested_img_path}")
             return None
+        if self.image_shape is None:
+            h, w, c = nested_img.shape
+            self.image_shape = (h, w // 2, c)
         imgL = nested_img[:, : nested_img.shape[1] // 2]
         imgR = nested_img[:, nested_img.shape[1] // 2 :]
         imgL = cv2.cvtColor(imgL, cv2.COLOR_BGR2GRAY)
@@ -179,6 +185,7 @@ class StereoCalibration:
             mtx_init,
             dist_init,
             criteria=CALIB_CRITERIA,
+            flags=cv2.CALIB_RATIONAL_MODEL,
         )
         retR, mtxR, distR, _, _ = cv2.calibrateCamera(
             self.objpoints,
@@ -187,6 +194,7 @@ class StereoCalibration:
             mtx_init,
             dist_init,
             criteria=CALIB_CRITERIA,
+            flags=cv2.CALIB_RATIONAL_MODEL,
         )
         logging.info(f"Left camera calibration complete with RMS error: {retL} pixels.")
         logging.info(
@@ -206,10 +214,12 @@ class StereoCalibration:
             distR,
             image_shape[:2][::-1],
             criteria=CALIB_CRITERIA,
-            flags=cv2.CALIB_FIX_INTRINSIC,
+            flags=cv2.CALIB_FIX_INTRINSIC | cv2.CALIB_RATIONAL_MODEL,
         )
         logging.info(f"Stereo calibration complete with RMS error: {retS} pixels.")
-        logging.info(f"Calibration matrices:\nmtxL: {mtxL}\ndistL: {distL}\nmtxR: {mtxR}\ndistR: {distR}")
+        logging.info(
+            f"Calibration matrices:\nmtxL: {mtxL}\ndistL: {distL}\nmtxR: {mtxR}\ndistR: {distR}"
+        )
         logging.info(f"Rotation matrix R:\n{R}\nTranslation vector T:\n{T}")
         return mtxL, distL, mtxR, distR, R, T, E, F
 
@@ -237,19 +247,23 @@ class StereoCalibration:
         objp = self.prepare_object_points()
         self.detect_corners(objp)
 
-        image_shape = cv2.imread(self.nested_images_paths[0]).shape
-        # divide the width by 2 to get the left or right image shape
-        image_shape = (image_shape[0], image_shape[1] // 2, image_shape[2])
+        if self.image_shape is None:
+            logging.error("No images could be read. Check your imgs_path and image files.")
+            return
+        image_shape = self.image_shape
         logging.info(f"Image shape detected: {image_shape}")
 
         mtxL, distL, mtxR, distR = self.calibrate_cameras(image_shape)
-        mtxL, distL, mtxR, distR, R, T, E, F = self.stereo_calibrate(mtxL, distL, mtxR, distR, image_shape)
+        mtxL, distL, mtxR, distR, R, T, E, F = self.stereo_calibrate(
+            mtxL, distL, mtxR, distR, image_shape
+        )
         self.save_calibration(mtxL, distL, mtxR, distR, R, T, E, F)
 
 
 if __name__ == "__main__":
     camera_name = "stereo_camera_vXX"
     imgs_path = "/path/to/camXX/*.png"
+    imgs_path = "/home/calvin/Documents/4d_sdk/examples/images_stereo_4d/*.png"
     chessboard_size = (9, 6)
     square_size = 0.0265  # in m or your unit
 
