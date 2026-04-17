@@ -2,7 +2,7 @@ from stereo_4d import Stereo4DCameraHandler
 import time
 
 if __name__ == "__main__":
-    handler = Stereo4DCameraHandler(show_stream=True)
+    handler = Stereo4DCameraHandler(show_stream=True, rectify_internally=True)
     try:
         handler.start(wait=True)
         while True:

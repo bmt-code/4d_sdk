@@ -39,7 +39,7 @@ if __name__ == "__main__":
             # Write the number of saved images at the top left
             cv2.putText(img, f"Saved: {saved_images}", (20, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 255), 3)
-            if time.time() - current_time > 1:
+            if time.time() - current_time > 2:
                 current_time = time.time()
                 save_frame(frame)
                 saved_images += 1
