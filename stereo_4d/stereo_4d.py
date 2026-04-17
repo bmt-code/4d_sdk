@@ -91,7 +91,7 @@ class Stereo4DCameraHandler:
         # status variables
         self.__handler_status = "stop"  # stop, start
         self.__last_status_time = None  # Track last status time
-        self.__status_timeout = 20.0  # Timeout in seconds
+        self.__status_timeout = 30.0  # Timeout in seconds
         self.__run_interval = 1.0  # Check every second
 
         # stereo rectification maps
@@ -121,7 +121,7 @@ class Stereo4DCameraHandler:
         self.__connected_event = threading.Event()
         self.__frame_event = threading.Event()
         self.__show_stream = show_stream
-        self.__logger = CustomLogger("FourDCameraHandler")
+        self.__logger = CustomLogger("Stereo4DCameraHandler")
 
         # zmq setup
         self.sub_socket = None
@@ -160,7 +160,7 @@ class Stereo4DCameraHandler:
         # start the run thread
         self.__run_thread = threading.Thread(target=self.__run)
         self.__run_thread.start()
-        self.__logger.info("FourDCameraHandler initialized")
+        self.__logger.info("Stereo 4D initialized")
 
     def get_fps(self):
         """Get the current frames per second (FPS)"""
@@ -586,7 +586,6 @@ class Stereo4DCameraHandler:
 
         # clear and set the frame event
         self.__frame_event.set()
-
         if elapsed_time >= self.__fps_measurement_interval:
             self.__prev_fps_measured_time = current_time
             self.__received_fps = self.__frame_count_in_interval / elapsed_time
@@ -715,19 +714,6 @@ class Stereo4DCameraHandler:
         self.__logger.info("Q matrix:")
         self.__logger.info(f"{Q}")
 
-        myQ = np.array(
-            [
-                [1, 0, 0, -left_k[0, 2]],
-                [0, 1, 0, -left_k[1, 2]],
-                [0, 0, 0, left_k[0, 0]],
-                [0, 0, 1 / 0.3, 0],
-                # Assuming a baseline of 0.3 meters, adjust as needed
-            ]
-        )
-
-        self.__logger.info("Custom Q matrix:")
-        self.__logger.info(f"{myQ}")
-
         self.map_left_x, self.map_left_y = cv2.initUndistortRectifyMap(
             left_k, left_dist_coeffs, R1, P1, (1920, 1080), cv2.CV_16SC2
         )
@@ -740,6 +726,20 @@ class Stereo4DCameraHandler:
         self.__logger.info(
             "Stereo rectification maps initialized successfully with the following parameters:"
         )
+
+        # TODO
+        myQ = np.array(
+            [
+                [1, 0, 0, -self.left_rect_k[0, 2]],
+                [0, 1, 0, -self.left_rect_k[1, 2]],
+                [0, 0, 0, self.left_rect_k[0, 0]],
+                [0, 0, 1 / 0.3, 0],
+                # Assuming a baseline of 0.3 meters, adjust as needed
+            ]
+        )
+        self.__logger.info("Custom Q matrix:")
+        self.__logger.info(f"{myQ}")
+
         self.__logger.info(f"Left Raw Matrix:\n{np.array2string(left_k, precision=2, suppress_small=True)}")
         self.__logger.info(f"Right Raw Matrix:\n{np.array2string(right_k, precision=2, suppress_small=True)}")
         self.__logger.info(f"Left Rect Matrix:\n{np.array2string(self.left_rect_k, precision=2, suppress_small=True)}")
@@ -761,12 +761,29 @@ class Stereo4DCameraHandler:
     def __show_stream_loop(self):
         cv2.namedWindow("Stream", cv2.WINDOW_NORMAL)
 
+        fps = 0
         while not self.__should_exit:
             if self.__last_frame is not None:
                 img = self.__last_frame.image.copy()
+
+                fps = self.get_fps()
+                fps = fps if fps is not None else 0
+
+                # show fps
+                cv2.putText(
+                    img,
+                    f"FPS: {int(fps)}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2,
+                )
+
                 cv2.imshow("Stream", img)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
+
         cv2.destroyAllWindows()
 
     def __del__(self):

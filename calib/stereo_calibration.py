@@ -20,7 +20,7 @@ class StereoCalibration:
         self.imgpoints_right = []  # 2D points in right image
         self.nested_images_paths = sorted(glob.glob(self.imgs_path))
         self.calibration_file = os.path.join(
-            self.camera_name, "stereo_calibration.yaml"
+            self.imgs_path.rstrip("/*"), "stereo_calibration.yaml"
         )
 
         # Configure logging
@@ -28,6 +28,18 @@ class StereoCalibration:
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(message)s",
         )
+
+        logging.info("--- Welcome to Stereo Calibration ---")
+        logging.info(f"Camera name: {camera_name}")
+        logging.info(f"Images path: {imgs_path}")
+        logging.info(f"Chessboard size: {chessboard_size}")
+        logging.info(f"Square size: {square_size}")
+        logging.info(f"Calibration file will be saved to: {self.calibration_file}")
+
+        confirm = input("Are these settings correct? (y/n): ").strip().lower()
+        if confirm != "y":
+            logging.info("Settings not confirmed. Exiting.")
+            exit(0)
 
     def check_existing_calibration(self):
         if os.path.exists(self.calibration_file):
@@ -108,6 +120,9 @@ class StereoCalibration:
 
     def process_image(self, nested_img_path, objp):
         nested_img = cv2.imread(nested_img_path)
+        if nested_img is None:
+            logging.error(f"Failed to load image: {nested_img_path}")
+            return None
         imgL = nested_img[:, : nested_img.shape[1] // 2]
         imgR = nested_img[:, nested_img.shape[1] // 2 :]
         imgL = cv2.cvtColor(imgL, cv2.COLOR_BGR2GRAY)
@@ -158,6 +173,7 @@ class StereoCalibration:
 
     def calibrate_cameras(self, image_shape):
         logging.info("Calibrating individual cameras...")
+
         retL, mtxL, distL, _, _ = cv2.calibrateCamera(
             self.objpoints, self.imgpoints_left, image_shape[:2][::-1], None, None
         )
@@ -191,17 +207,15 @@ class StereoCalibration:
 
     def save_calibration(self, mtxL, distL, mtxR, distR, R, T, E, F):
         calibration_data = {
+            "camera_name": self.camera_name,
             "mtxL": mtxL.tolist(),
             "distL": distL.tolist(),
             "mtxR": mtxR.tolist(),
             "distR": distR.tolist(),
             "R": R.tolist(),
             "T": T.tolist(),
-            "E": E.tolist(),
-            "F": F.tolist(),
         }
 
-        os.makedirs(self.camera_name, exist_ok=True)
         with open(self.calibration_file, "w") as f:
             yaml.dump(calibration_data, f, default_flow_style=False)
         logging.info(
@@ -224,24 +238,14 @@ class StereoCalibration:
 
 
 if __name__ == "__main__":
-    camera_name = "stereo_camera_vXX"
-    imgs_path = "/path/to/camXX/*.png"
+    camera_name = "cam18"
+    imgs_path = "/home/gss/bmt_ros2_ws/src/4d_sdk/examples/cam18/*"
     chessboard_size = (9, 6)
-    square_size = 0.0262  # in m or your unit
+    square_size = 0.024  # in m or your unit
 
     calibration = StereoCalibration(
         camera_name, imgs_path, chessboard_size, square_size
     )
-    logging.info("--- Welcome to Stereo Calibration ---")
-    logging.info(f"Camera name: {camera_name}")
-    logging.info(f"Images path: {imgs_path}")
-    logging.info(f"Chessboard size: {chessboard_size}")
-    logging.info(f"Square size: {square_size}")
-
-    confirm = input("Are these settings correct? (y/n): ").strip().lower()
-    if confirm != "y":
-        logging.info("Settings not confirmed. Exiting.")
-        exit(0)
 
     calibration.run()
 

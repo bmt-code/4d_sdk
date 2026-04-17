@@ -62,7 +62,7 @@ if __name__ == "__main__":
                 current_time = time.time()
                 save_frame(frame, folder_path)
                 saved_images += 1
-                img = 255 * np.ones_like(img)
+                img = 50 * np.ones_like(img)
                 cv2.imshow("Stream", img)
                 cv2.waitKey(20)  # Show for 20 ms
             else:
