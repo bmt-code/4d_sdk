@@ -176,3 +176,8 @@ cython_debug/
 *.png
 *.jpeg
 *.jpg
+.vscode
+
+*.yaml
+*.txt
+*.db3

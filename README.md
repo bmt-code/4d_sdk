@@ -1,46 +1,88 @@
 # 4D SDK
 
-The **4D SDK** is a software development kit designed for the **4D Stereo Camera**. It provides tools and utilities to work with stereo camera data in a ROS2 environment.
+Python SDK for the **4D Stereo Camera**. Provides stereo image streaming, rectification, and calibration utilities over ZMQ. Optional ROS2 integration for robotics applications.
+
+## Requirements
+
+- Python >= 3.8
+- Core: `opencv-python`, `numpy`, `zmq`
+- Optional: `scipy` (calibration), `rclpy` + `cv_bridge` (ROS2)
 
 ## Installation
 
-Follow these steps to install and set up the 4D SDK:
+```bash
+# Install Python dependencies
+pip3 install -r requirements.txt
 
-1. **Install ROS2 dependencies**:
-    - Install `compressed_image_transport` and `image_transport` for your ROS2 version:
+# Install as editable package
+pip3 install -e .
+```
 
-      ```bash
-      sudo apt install ros-<ros2-distro>-compressed-image-transport ros-<ros2-distro>-image-transport
-      ```
+For ROS2 features, also install:
 
-      Replace `<ros2-distro>` with your ROS2 distribution (e.g., `humble`, `foxy`, etc.).
+```bash
+sudo apt install ros-${ROS_DISTRO}-compressed-image-transport ros-${ROS_DISTRO}-image-transport
+```
 
-2. **Install Python dependencies**:
-    - Use `pip3` to install the required Python packages:
+## Quick Start
 
-      ```bash
-      pip3 install zmq numpy opencv-python
-      ```
+```python
+from stereo_4d import Stereo4DCameraHandler
+import time
 
-3. **Clone the repository**:
-    - Clone the 4D SDK repository into your workspace:
+handler = Stereo4DCameraHandler(show_stream=True, rectify_internally=True)
+handler.start(wait=True)
 
-      ```bash
-      git clone <repository-url>
-      ```
+try:
+    while True:
+        frame = handler.get_last_frame()
+        if frame is not None:
+            print(f"Frame {frame.frame_id}: {frame.image.shape}")
+        time.sleep(0.1)
+except KeyboardInterrupt:
+    handler.stop()
+```
 
-      Replace `<repository-url>` with the actual URL of the repository.
+## Examples
 
-4. **Run the SDK**:
-    - Navigate to the repository directory and run the `fourd_ros2.py` script:
+| Example | Description | Requires |
+|---------|-------------|----------|
+| `examples/simple_stream.py` | Minimal streaming with live preview | Camera |
+| `examples/image_saver.py` | Captures frames periodically and saves PNGs | Camera |
+| `examples/stream_monitor.py` | Monitors stream health and logs dropouts | Camera |
+| `examples/image_viewer.py` | Interactive stereo topic viewer | Camera + ROS2 |
+| `examples/stereo_4d_ros2.py` | Full ROS2 driver publishing stereo images | Camera + ROS2 |
 
-      ```bash
-      cd scripts
-      python3 fourd_ros2.py
-      ```
+Run any example with:
 
-## Usage
+```bash
+python3 examples/simple_stream.py
+```
 
-The 4D SDK enables seamless integration with the 4D Stereo Camera, providing tools for image processing and data handling in ROS2.
+## Architecture
 
-For more details, refer to the documentation or contact the development team.
+**`Stereo4DCameraHandler`** manages the full camera lifecycle:
+
+- Connects to the camera over ZMQ (default `172.31.1.77:5555`)
+- Background threads handle frame reception, status heartbeats, and connection monitoring
+- Frames arrive as JSON with hex-encoded JPEG data, decoded via OpenCV
+- Stereo rectification can be applied internally when `rectify_internally=True`
+- Auto-reconnects on heartbeat timeout or excessive frame drops
+
+**Key classes:**
+
+- `Stereo4DFrame` — holds `timestamp`, `frame_id`, and `image` (numpy array)
+- `Stereo4DCameraInfo` — per-camera calibration data (intrinsics, distortion, rectification)
+
+## Calibration
+
+Calibration tools are in `calib/`. See [`calib/how-to-calib.md`](calib/how-to-calib.md) for a step-by-step guide using ROS2's `camera_calibration` package.
+
+```bash
+# Example: run stereo calibration with ROS2
+ros2 run camera_calibration cameracalibrator --no-service-check --approximate 0.1 \
+  --size 8x6 --square 0.03 \
+  right:=stereo_4d/right_raw/image left:=stereo_4d/left_raw/image \
+  right_camera:=stereo_4d/right_raw left_camera:=stereo_4d/left_raw \
+  --fix-principal-point
+```
