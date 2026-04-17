@@ -108,7 +108,7 @@ def main():
     parser = argparse.ArgumentParser(description="Check stereo calibration quality with a checkerboard.")
     parser.add_argument("--chessboard", type=str, default="9,6",
                         help="Inner corners as 'cols,rows' (default: 9,6)")
-    parser.add_argument("--square", type=float, default=26.5,
+    parser.add_argument("--square", type=float, default=24,
                         help="Square size in mm (default: 26.5)")
     parser.add_argument("--ip", type=str, default="172.31.1.77",
                         help="Camera IP address (default: 172.31.1.77)")
