@@ -178,5 +178,5 @@ cython_debug/
 *.jpg
 .vscode
 
-.yaml
-.txt
+*.yaml
+*.txt
