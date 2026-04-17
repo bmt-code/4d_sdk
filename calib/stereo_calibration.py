@@ -231,8 +231,6 @@ class StereoCalibration:
             "distR": np.round(distR, precision).tolist(),
             "R": np.round(R, precision).tolist(),
             "T": np.round(T, precision).tolist(),
-            "E": np.round(E, precision).tolist(),
-            "F": np.round(F, precision).tolist(),
         }
 
         os.makedirs(self.camera_name, exist_ok=True)
@@ -261,11 +259,11 @@ class StereoCalibration:
 
 
 if __name__ == "__main__":
-    camera_name = "stereo_camera_vXX"
-    imgs_path = "/path/to/camXX/*.png"
-    imgs_path = "/home/calvin/Documents/4d_sdk/examples/images_stereo_4d/*.png"
+    camera_name = "stereo_camera_v18"
+    # imgs_path = "/path/to/cam18/*.png"
+    imgs_path = "/home/gss/bmt_ros2_ws/src/4d_sdk/examples/cam18/*.png"
     chessboard_size = (9, 6)
-    square_size = 0.0265  # in m or your unit
+    square_size = 0.024  # in m or your unit
 
     calibration = StereoCalibration(
         camera_name, imgs_path, chessboard_size, square_size
