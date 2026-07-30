@@ -21,10 +21,11 @@ class RepeatTimer(Timer):
 
 
 class Stereo4DFrame:
-    def __init__(self, timestamp=None, frame_id=None, image=None):
+    def __init__(self, timestamp=None, frame_id=None, image=None, exposure_control=None):
         self.timestamp = timestamp
         self.frame_id = frame_id
         self.image = image
+        self.exposure_control = exposure_control
 
     def copy(self):
         """Create a copy of the frame"""
@@ -32,6 +33,7 @@ class Stereo4DFrame:
             timestamp=self.timestamp,
             frame_id=self.frame_id,
             image=self.image.copy() if self.image is not None else None,
+            exposure_control=self.exposure_control,
         )
 
     def __repr__(self):
@@ -196,6 +198,23 @@ class Stereo4DCameraHandler:
             return False
         else:
             return True
+
+    def set_exposure_control(self, enable: bool):
+        """Sends an exposure control command to the camera.
+
+        Args:
+            enable (bool): True to enable custom Highlight AEC, False for Normal AEC.
+        """
+        self.__logger.info(f"Sending set_exposure command: enable={enable}")
+        try:
+            command_payload = {
+                "action": "set_exposure",
+                "enable": enable
+            }
+            status_msg = json.dumps(command_payload).encode()
+            self.pub_socket.send_multipart([b"command", status_msg], zmq.NOBLOCK)
+        except Exception as e:
+            self.__logger.error(f"Failed to send exposure command: {e}")
 
     def start(self, wait=True, timeout=None):
 
@@ -577,6 +596,7 @@ class Stereo4DCameraHandler:
         frame = Stereo4DFrame(
             timestamp=timestamp,
             image=image,
+            exposure_control=msg_json.get("exposure_control", None),
         )
 
         self.__last_frame = frame
