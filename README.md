@@ -52,6 +52,7 @@ except KeyboardInterrupt:
 | `examples/stream_monitor.py` | Monitors stream health and logs dropouts | Camera |
 | `examples/image_viewer.py` | Interactive stereo topic viewer | Camera + ROS2 |
 | `examples/stereo_4d_ros2.py` | Full ROS2 driver publishing stereo images | Camera + ROS2 |
+| `examples/exposure_pair_viewer.py` | Interactive dual-exposure tuner: both exposures side by side, retuned live | Camera |
 
 Run any example with:
 
@@ -71,8 +72,52 @@ python3 examples/simple_stream.py
 
 **Key classes:**
 
-- `Stereo4DFrame` — holds `timestamp`, `frame_id`, and `image` (numpy array)
+- `Stereo4DFrame` — holds `timestamp`, `frame_id`, `image` (numpy array) and `exposure`
 - `Stereo4DCameraInfo` — per-camera calibration data (intrinsics, distortion, rectification)
+
+## Dual Exposure
+
+One exposure cannot hold both a bright light and the room around it. The camera can alternate
+two separately correct exposures — a short one metered for the light, a long one for the rest —
+and tags every frame with which one it is. Both arrive interleaved on the same stream, so the
+handler keeps the newest of each:
+
+```python
+handler.set_exposure_pair(short_us=4000, long_us=25000, engine="manual")
+
+short = handler.get_last_frame("short")
+long_frame = handler.get_last_frame("long")
+print(short.exposure_label, short.exposure_time_us)   # "short" 4013
+
+handler.get_exposure_fps()     # {"short": 9.8, "long": 9.9} - each is half the frame rate
+handler.get_exposure_stats()   # targets, measured exposures, phase_lock_percent
+```
+
+`engine` picks how the two are produced: `"manual"` (absolute microseconds, applied on the
+next frame), `"hdr"` (the ISP alternates two AGC channels on its own, each metering with one
+of the camera's two proven AE profiles; changes rebuild the camera, so the stream pauses
+~1-2s) or `"auto"` (one exposure, AE running).
+
+Under `"hdr"`, `short_us`/`long_us` are ignored unless you pass `hdr_envelope=True` — the
+per-channel AE chooses the exposure, and `set_exposure_control()` selects between the split
+(short channel meters the bright light, long channel meters the room) and both channels
+metering the room.
+
+A frame caught while an exposure change was still landing is labelled `"unknown"` rather than
+guessed at, and `get_last_frame("short"|"long")` never returns one. `set_exposure_lock(True)`
+freezes the AE where it is — the hook for "the tool is visible at this exposure, stop hunting".
+
+Tune both exposures interactively against a live scene with:
+
+```bash
+python3 examples/exposure_pair_viewer.py --ip 172.31.1.77
+```
+
+## Tests
+
+```bash
+python3 tests/test_exposure_frame.py   # no camera needed
+```
 
 ## Calibration
 

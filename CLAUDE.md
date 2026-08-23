@@ -30,7 +30,9 @@ ros2 run camera_calibration cameracalibrator --no-service-check --approximate 0.
   --fix-principal-point
 ```
 
-No formal test suite exists. Verify changes by running examples with a connected camera and checking frame reception/calibration loading.
+There is no full test suite. `python3 tests/test_exposure_frame.py` covers the dual-exposure
+parsing and bookkeeping without a camera; everything else is verified by running the examples
+against a connected camera and checking frame reception/calibration loading.
 
 ## Core Architecture
 
@@ -49,7 +51,18 @@ No formal test suite exists. Verify changes by running examples with a connected
 - `"intrinsics"` → populate `left_camera_info`/`right_camera_info`, compute stereo rectification maps via `cv2.stereoRectify` + `cv2.initUndistortRectifyMap`
 - `"status"` → update heartbeat timestamp
 
-**`Stereo4DFrame`** — holds `timestamp`, `frame_id`, and `image` (numpy array).
+**`Stereo4DFrame`** — holds `timestamp`, `frame_id`, `image` (numpy array) and `exposure`
+(`{"label": "short"|"long"|"unknown", "engine", "left": {...}, "right": {...}, "lux"}`), with
+`exposure_label` and `exposure_time_us` shortcuts.
+
+**Dual exposure** — the camera can alternate a short exposure (metered for a bright light) and
+a long one (metered for the room), interleaved on the same stream and labelled per frame.
+`set_exposure_pair()`, `set_exposure_mode()`, `set_exposure_lock()` and `set_awb_gains()` send
+the commands; `get_last_frame("short"|"long")` returns the newest frame of each,
+`get_exposure_fps()` their delivery rates, and `get_exposure_stats()` the camera's telemetry
+(`phase_lock_percent` is how often the two eyes agreed on a frame's exposure). Labels come from
+what the sensor measured, never from what was requested. See `examples/exposure_pair_viewer.py`
+and the Dual Exposure section of the firmware README.
 
 **`Stereo4DCameraInfo`** — holds per-camera calibration: `k` (intrinsics), `d` (distortion), `r`, `p`, `extrinsic_matrix`, `rect_matrix`.
 
@@ -60,6 +73,7 @@ No formal test suite exists. Verify changes by running examples with a connected
 - `stream_monitor.py` — monitors stream health, logs dropout events to file
 - `image_viewer.py` — ROS2 node with interactive stereo topic switching
 - `stereo_4d_ros2.py` — full ROS2 driver publishing stereo images
+- `exposure_pair_viewer.py` — interactive dual-exposure tuner: both exposures side by side, retuned live over ZMQ
 
 ### Calibration (`calib/`)
 
