@@ -147,9 +147,12 @@ def draw_hud(canvas, state, views, stats, rates, notice):
         source = "targets"
     else:
         source = "AE"
+    out_of_sync = stats.get("out_of_sync_percent")
     summary = (
         f"engine {state['engine']:<6} {source:<17} hold_n {state['hold_n']} "
-        f"| phase-lock {fmt(phase_lock,'%',1)} | unknown {fmt(unknown,'%',1)}"
+        f"| phase-lock {fmt(phase_lock,'%',1)} | unknown {fmt(unknown,'%',1)} "
+        f"| desync {fmt(out_of_sync,'%',1)} "
+        f"| cam pairs S/L {stats.get('pairs_short','--')}/{stats.get('pairs_long','--')}"
     )
     second = (
         f"profile {'split (on)' if state['profile_on'] else 'room (off)'} "
