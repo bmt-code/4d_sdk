@@ -309,33 +309,36 @@ class Stereo4DCameraHandler:
         return self.__send_command(payload, "exposure pair command")
 
     def set_auto_exposure(self, mode="normal"):
-        """Hand exposure to the camera's own AE, under one of its constraint profiles.
-
-        One auto-metered stream instead of the two alternating targets -- the way the camera
-        ran before dual exposure existed. Lands on the next frame; nothing rebuilds, and
-        switching between profiles is as cheap as switching the AE off.
+        """Pick the exposure mode. Lands on the next frame; nothing rebuilds.
 
         Args:
             mode (str): one of
 
+                ``"manual"``
+                    No AE. The two absolute targets alternate, 15Hz each; the pair last set
+                    through :meth:`set_exposure_pair` is what runs. Nothing follows the
+                    scene, which is the point -- both exposures are exactly what was asked
+                    for, and every frame is labelled from the exposure it came back with.
                 ``"normal"``
-                    The stock Raspberry Pi constraint: the brightest 2% of the image is
-                    pulled up to mid-grey. What the camera does when nothing says otherwise.
+                    The AE, under the stock Raspberry Pi constraint: the brightest 2% of the
+                    image is pulled up to mid-grey. One stream, 30Hz. What the camera does
+                    when nothing says otherwise.
                 ``"highlight"``
-                    The tuned profile: that same 2% is held between 0.2 and 0.4 instead, so
-                    a bright light stops blowing out, at the cost of a darker room. The
-                    upper bound is the point -- ``normal`` has none.
-                ``"off"``
-                    No AE. The two absolute targets resume, alternating; the pair last set
-                    through :meth:`set_exposure_pair` is what comes back.
+                    The AE, under the tuned constraint: that same 2% is held between 0.2 and
+                    0.4, so a bright light stops blowing out -- at the cost of a dark room.
+                    One stream, 30Hz.
+                ``"ae_dual"``
+                    Both profiles, alternating frame by frame, 15Hz each. The beam frame
+                    arrives as ``"short"`` and the room frame as ``"long"``, the same shape
+                    as ``manual`` -- except the AE chooses both exposures, so each follows
+                    the scene instead of being set once.
 
-            What each profile actually does lives in the camera's ``custom_ov5647.json``
-            and can be retuned there without changing this call.
+            What ``normal`` and ``highlight`` mean lives in the camera's
+            ``custom_ov5647.json`` and can be retuned there without changing this call.
 
-        While the AE runs it carries the old limits with it: the two eyes meter
-        independently, so they can disagree on the same scene, and one exposure cannot hold
-        the surgical beam and the room at once. Every frame arrives labelled ``"short"``,
-        since there is nothing to tell apart.
+        Whenever the AE runs it carries its own limits: the two eyes meter independently, so
+        they can disagree on the same scene. Under the single-profile modes every frame
+        arrives labelled ``"short"``, since there is nothing to tell apart.
         """
         self.__logger.info(f"Sending set_auto_exposure command: mode={mode}")
         return self.__send_command(

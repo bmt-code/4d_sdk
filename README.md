@@ -103,26 +103,29 @@ change lands on the **next frame** and nothing ever rebuilds the camera. Each ex
 delivered at half the capture rate — 15 Hz each at 30 fps — and both are clamped below the
 frame period (31333us at 30 fps).
 
-### The AE, and its profiles
+### Exposure modes
 
-`set_auto_exposure(mode)` hands exposure to the camera's own AE under one of its constraint
-profiles — one auto-metered stream, no alternation, the way it ran before the two targets
-existed.
+`set_auto_exposure(mode)` picks who chooses the exposure and how many streams come back.
+`get_last_frame("short")` and `get_last_frame("long")` both fill in the alternating modes;
+in the single-stream modes every frame arrives as `"short"` and the `"long"` side stops
+updating.
 
-| mode | what it does |
-|---|---|
-| `"normal"` | stock Raspberry Pi metering: pull the brightest 2% up to mid-grey. The default. |
-| `"highlight"` | hold that 2% between 0.2 and 0.4 instead — a bright light stops blowing out, at the cost of a darker room. |
-| `"off"` | no AE; the pair last set through `set_exposure_pair()` resumes. |
+| mode | streams | rate | what it does |
+|---|---|---|---|
+| `"manual"` | short + long | 15 Hz each | no AE; the pair last set through `set_exposure_pair()` runs. |
+| `"normal"` | one | 30 Hz | stock Raspberry Pi metering: pull the brightest 2% up to mid-grey. The default. |
+| `"highlight"` | one | 30 Hz | hold that 2% between 0.2 and 0.4 instead — a bright light stops blowing out, at the cost of a darker room. |
+| `"ae_dual"` | short + long | 15 Hz each | both profiles alternating: `highlight` on `short`, `normal` on `long`. Same shape as `manual`, except the AE picks both exposures so each follows the scene. |
 
-Switching profile is a runtime control, so it costs a frame, not a rebuild. The AE carries
-the old limits with it — the two eyes meter independently, and one exposure cannot hold the
-bright light and the room at once.
+Switching mode is a runtime control, so it costs a frame, not a rebuild. Whenever the AE
+runs it carries its own limits — the two eyes meter independently, and under a single profile
+one exposure cannot hold the bright light and the room at once.
 
 ```python
-handler.set_auto_exposure("normal")      # stock AE
-handler.set_auto_exposure("highlight")   # AE that protects the bright light
-handler.set_auto_exposure("off")         # back to the pair last set through set_exposure_pair
+handler.set_auto_exposure("normal")      # stock AE, one stream
+handler.set_auto_exposure("highlight")   # AE that protects the bright light, one stream
+handler.set_auto_exposure("ae_dual")     # both profiles alternating, short + long
+handler.set_auto_exposure("manual")      # back to the pair set through set_exposure_pair
 ```
 
 Every frame arrives labelled `"short"` while auto runs, since there is nothing to tell apart,

@@ -18,7 +18,7 @@ Keys
     tab       move focus between short and long
     f         fine steps (x0.2)
     l         toggle the AWB lock
-    n         cycle the AE: off (two targets) / normal / highlight
+    n         cycle the mode: manual / normal / highlight / ae_dual
     p         dump the current short and long frames as PNGs
     esc / x   quit
 """
@@ -32,8 +32,11 @@ import numpy as np
 
 from stereo_4d import Stereo4DCameraHandler
 
-# Off first, so the key reads as "leave the pair, try an AE profile, come back".
-AE_CYCLE = ("off", "normal", "highlight")
+# Manual first, so the key reads as "leave the pair, try each AE mode, come back".
+AE_CYCLE = ("manual", "normal", "highlight", "ae_dual")
+
+# The modes that deliver two labels. The others fill only the short pane.
+AE_ALTERNATING = ("manual", "ae_dual")
 
 SHORT = "short"
 LONG = "long"
@@ -149,11 +152,11 @@ def draw_hud(canvas, state, views, stats, rates, notice):
     # Bottom row: what each toggle is bound to, and where it currently stands. The AE
     # segment is drawn on its own so it can be coloured -- dual is the working mode, an AE
     # profile is the exception, and which one is running has to be readable at a glance.
-    ae_text = (
-        "[n] AE off / dual targets" if state["ae"] == "off"
-        else f"[n] AE {state['ae']}"
-    )
-    ae_colour = HUD_DIM if state["ae"] == "off" else HUD_WARN
+    ae_text = f"[n] mode {state['ae']}"
+    if state["ae"] not in AE_ALTERNATING:
+        ae_text += " - single stream, long pane idle"
+    # Dim for manual, the working mode; coloured for anything the AE is driving.
+    ae_colour = HUD_DIM if state["ae"] == "manual" else HUD_WARN
     cv2.putText(canvas, ae_text, (12, 90), font, 0.45, ae_colour, 1, cv2.LINE_AA)
 
     rest = (
@@ -229,8 +232,8 @@ def main():
         "short_gain": args.short_gain,
         "long_gain": args.long_gain,
         # The camera comes up with its AE running; the send_pair() below is what takes it
-        # out, so the viewer starts on the two targets.
-        "ae": "off",
+        # out, so the viewer starts on the two manual targets.
+        "ae": "manual",
         "focus": SHORT,
         "fine": False,
         "awb_locked": False,
@@ -311,10 +314,12 @@ def main():
             elif key in (ord("n"), ord("N")):
                 state["ae"] = AE_CYCLE[(AE_CYCLE.index(state["ae"]) + 1) % len(AE_CYCLE)]
                 handler.set_auto_exposure(state["ae"])
-                announce(
-                    "dual exposure: the two targets are back" if state["ae"] == "off"
-                    else f"camera AE, '{state['ae']}' constraint: one stream"
-                )
+                announce({
+                    "manual": "manual: the two absolute targets are back, 15Hz each",
+                    "normal": "AE normal: one auto-metered stream at 30Hz",
+                    "highlight": "AE highlight: one stream, metered for the bright light",
+                    "ae_dual": "AE dual: normal and highlight alternating, 15Hz each",
+                }[state["ae"]])
             elif key == ord("l"):
                 state["awb_locked"] = not state["awb_locked"]
                 handler.set_awb_gains(awb_gains if state["awb_locked"] else None)
@@ -325,8 +330,8 @@ def main():
 
             if changed:
                 # Every change lands on the next frame, so there is nothing to debounce.
-                # Sending a pair is also what leaves auto, so the HUD has to follow.
-                state["ae"] = "off"
+                # Sending a pair is also what leaves the AE, so the HUD has to follow.
+                state["ae"] = "manual"
                 send_pair(handler, state)
     except KeyboardInterrupt:
         pass
