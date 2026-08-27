@@ -18,7 +18,7 @@ Keys
     tab       move focus between short and long
     f         fine steps (x0.2)
     l         toggle the AWB lock
-    n         toggle the camera AE (legacy auto: it meters for itself, one stream)
+    n         cycle the AE: off (two targets) / normal / highlight
     p         dump the current short and long frames as PNGs
     esc / x   quit
 """
@@ -31,6 +31,9 @@ import cv2
 import numpy as np
 
 from stereo_4d import Stereo4DCameraHandler
+
+# Off first, so the key reads as "leave the pair, try an AE profile, come back".
+AE_CYCLE = ("off", "normal", "highlight")
 
 SHORT = "short"
 LONG = "long"
@@ -141,13 +144,25 @@ def draw_hud(canvas, state, views, stats, rates, notice):
         f"| cadence {fmt(cadence,'%',1)} "
         f"| cam pairs S/L {stats.get('pairs_short','--')}/{stats.get('pairs_long','--')}"
     )
-    second = (
-        f"| exposure {'AUTO (legacy)' if state['auto'] else 'dual'} "
-        f"| awb {'locked' if state['awb_locked'] else 'auto'} "
-        f"| step {'fine' if state['fine'] else 'coarse'}"
-    )
     cv2.putText(canvas, summary, (12, 72), font, 0.5, summary_colour, 1, cv2.LINE_AA)
-    cv2.putText(canvas, second, (12, 90), font, 0.45, HUD_DIM, 1, cv2.LINE_AA)
+
+    # Bottom row: what each toggle is bound to, and where it currently stands. The AE
+    # segment is drawn on its own so it can be coloured -- dual is the working mode, an AE
+    # profile is the exception, and which one is running has to be readable at a glance.
+    ae_text = (
+        "[n] AE off / dual targets" if state["ae"] == "off"
+        else f"[n] AE {state['ae']}"
+    )
+    ae_colour = HUD_DIM if state["ae"] == "off" else HUD_WARN
+    cv2.putText(canvas, ae_text, (12, 90), font, 0.45, ae_colour, 1, cv2.LINE_AA)
+
+    rest = (
+        f"   | [l] awb {'locked' if state['awb_locked'] else 'auto'} "
+        f"| [f] step {'fine' if state['fine'] else 'coarse'} "
+        f"| [tab] focus {state['focus']}"
+    )
+    ae_width = cv2.getTextSize(ae_text, font, 0.45, 1)[0][0]
+    cv2.putText(canvas, rest, (12 + ae_width, 90), font, 0.45, HUD_DIM, 1, cv2.LINE_AA)
 
     if notice:
         cv2.putText(
@@ -213,8 +228,9 @@ def main():
         "long_us": args.long_us,
         "short_gain": args.short_gain,
         "long_gain": args.long_gain,
-        # The camera comes up in legacy auto; the send_pair() below is what takes it out.
-        "auto": False,
+        # The camera comes up with its AE running; the send_pair() below is what takes it
+        # out, so the viewer starts on the two targets.
+        "ae": "off",
         "focus": SHORT,
         "fine": False,
         "awb_locked": False,
@@ -293,11 +309,11 @@ def main():
             elif key == ord("f"):
                 state["fine"] = not state["fine"]
             elif key in (ord("n"), ord("N")):
-                state["auto"] = not state["auto"]
-                handler.set_auto_exposure(state["auto"])
+                state["ae"] = AE_CYCLE[(AE_CYCLE.index(state["ae"]) + 1) % len(AE_CYCLE)]
+                handler.set_auto_exposure(state["ae"])
                 announce(
-                    "legacy auto exposure: the camera meters for itself, one stream"
-                    if state["auto"] else "dual exposure: the two targets are back"
+                    "dual exposure: the two targets are back" if state["ae"] == "off"
+                    else f"camera AE, '{state['ae']}' constraint: one stream"
                 )
             elif key == ord("l"):
                 state["awb_locked"] = not state["awb_locked"]
@@ -310,7 +326,7 @@ def main():
             if changed:
                 # Every change lands on the next frame, so there is nothing to debounce.
                 # Sending a pair is also what leaves auto, so the HUD has to follow.
-                state["auto"] = False
+                state["ae"] = "off"
                 send_pair(handler, state)
     except KeyboardInterrupt:
         pass

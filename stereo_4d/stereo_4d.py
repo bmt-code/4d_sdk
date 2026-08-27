@@ -283,7 +283,7 @@ class Stereo4DCameraHandler:
         Absolute microseconds, pushed straight at the sensor with the AE off. Every change
         lands on the next frame -- nothing here rebuilds the camera.
 
-        The camera starts in legacy auto, so **this is also what turns dual exposure on**.
+        The camera starts with its AE running, so **this is also what turns dual exposure on**.
         Sending it once is enough; the camera stays in dual for as long as this connection
         lasts, and returns to auto when the connection ends. A client that never calls this
         gets the single auto-metered stream the camera has always produced.
@@ -308,22 +308,38 @@ class Stereo4DCameraHandler:
         self.__logger.info(f"Sending set_exposure_pair command: {payload}")
         return self.__send_command(payload, "exposure pair command")
 
-    def set_auto_exposure(self, enable=True):
-        """Legacy mode: hand exposure back to the camera's own AE.
+    def set_auto_exposure(self, mode="normal"):
+        """Hand exposure to the camera's own AE, under one of its constraint profiles.
 
-        One auto-metered stream instead of the two alternating targets -- the way the
-        camera ran before dual exposure existed, kept so an older client still gets a
-        usable picture. Lands on the next frame; nothing rebuilds.
+        One auto-metered stream instead of the two alternating targets -- the way the camera
+        ran before dual exposure existed. Lands on the next frame; nothing rebuilds, and
+        switching between profiles is as cheap as switching the AE off.
 
-        It carries the old limits with it: the two eyes meter independently, so they can
-        disagree on the same scene, and one exposure cannot hold the surgical beam and the
-        room at once. Every frame arrives labelled "short", since there is nothing to tell
-        apart. Pass enable=False to take exposure back; the last pair set through
-        set_exposure_pair resumes.
+        Args:
+            mode (str): one of
+
+                ``"normal"``
+                    The stock Raspberry Pi constraint: the brightest 2% of the image is
+                    pulled up to mid-grey. What the camera does when nothing says otherwise.
+                ``"highlight"``
+                    The tuned profile: that same 2% is held between 0.2 and 0.4 instead, so
+                    a bright light stops blowing out, at the cost of a darker room. The
+                    upper bound is the point -- ``normal`` has none.
+                ``"off"``
+                    No AE. The two absolute targets resume, alternating; the pair last set
+                    through :meth:`set_exposure_pair` is what comes back.
+
+            What each profile actually does lives in the camera's ``custom_ov5647.json``
+            and can be retuned there without changing this call.
+
+        While the AE runs it carries the old limits with it: the two eyes meter
+        independently, so they can disagree on the same scene, and one exposure cannot hold
+        the surgical beam and the room at once. Every frame arrives labelled ``"short"``,
+        since there is nothing to tell apart.
         """
-        self.__logger.info(f"Sending set_auto_exposure command: enable={enable}")
+        self.__logger.info(f"Sending set_auto_exposure command: mode={mode}")
         return self.__send_command(
-            {"action": "set_auto_exposure", "enable": bool(enable)}, "auto exposure command"
+            {"action": "set_auto_exposure", "mode": str(mode)}, "auto exposure command"
         )
 
     def set_awb_gains(self, gains):

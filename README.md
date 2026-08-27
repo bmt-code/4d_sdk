@@ -82,8 +82,8 @@ two separately correct exposures — a short one metered for the light, a long o
 and tags every frame with which one it is. Both arrive interleaved on the same stream, so the
 handler keeps the newest of each.
 
-**It is opt-in.** The camera comes up in legacy auto, and `set_exposure_pair()` is what turns
-dual on. Call it once; the camera stays in dual for as long as this handler stays connected,
+**It is opt-in.** The camera comes up with its AE running, and `set_exposure_pair()` is what
+turns dual on. Call it once; the camera stays in dual for as long as this handler stays connected,
 and returns to auto when the connection ends. A client that never calls it gets the single
 auto-metered stream the camera has always produced.
 
@@ -103,21 +103,31 @@ change lands on the **next frame** and nothing ever rebuilds the camera. Each ex
 delivered at half the capture rate — 15 Hz each at 30 fps — and both are clamped below the
 frame period (31333us at 30 fps).
 
-### Legacy auto
+### The AE, and its profiles
 
-The default, and where `set_auto_exposure()` returns you. The camera's own AE: one
-auto-metered stream, no alternation, the way it ran before the two targets existed. It
-carries the old limits with it — the two eyes meter independently, and one exposure cannot
-hold the bright light and the room at once.
+`set_auto_exposure(mode)` hands exposure to the camera's own AE under one of its constraint
+profiles — one auto-metered stream, no alternation, the way it ran before the two targets
+existed.
+
+| mode | what it does |
+|---|---|
+| `"normal"` | stock Raspberry Pi metering: pull the brightest 2% up to mid-grey. The default. |
+| `"highlight"` | hold that 2% between 0.2 and 0.4 instead — a bright light stops blowing out, at the cost of a darker room. |
+| `"off"` | no AE; the pair last set through `set_exposure_pair()` resumes. |
+
+Switching profile is a runtime control, so it costs a frame, not a rebuild. The AE carries
+the old limits with it — the two eyes meter independently, and one exposure cannot hold the
+bright light and the room at once.
 
 ```python
-handler.set_auto_exposure(True)    # camera meters for itself
-handler.set_auto_exposure(False)   # back to the pair last set through set_exposure_pair
+handler.set_auto_exposure("normal")      # stock AE
+handler.set_auto_exposure("highlight")   # AE that protects the bright light
+handler.set_auto_exposure("off")         # back to the pair last set through set_exposure_pair
 ```
 
 Every frame arrives labelled `"short"` while auto runs, since there is nothing to tell apart,
 so `get_last_frame("short")` sees the full rate and `get_last_frame("long")` stops updating.
-`get_exposure_stats()["auto"]` says which mode is running. Like the pair, it lands on the next
+`get_exposure_stats()["ae_mode"]` says which profile is running. Like the pair, it lands on the next
 frame — nothing rebuilds.
 
 A frame caught while an exposure change was still landing is labelled `"unknown"` rather than

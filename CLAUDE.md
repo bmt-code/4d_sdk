@@ -55,7 +55,7 @@ against a connected camera and checking frame reception/calibration loading.
 (`{"label": "short"|"long"|"unknown", "left": {...}, "right": {...}, "lux"}`), with
 `exposure_label` and `exposure_time_us` shortcuts.
 
-**Dual exposure** — opt-in: the camera comes up in legacy auto and the first
+**Dual exposure** — opt-in: the camera comes up with its AE running and the first
 `set_exposure_pair()` switches it to dual, for as long as that connection lasts. It alternates
 a short exposure (for a bright light) and a long one (for the room), interleaved on the same
 stream and labelled per frame. Both are absolute
@@ -68,11 +68,14 @@ how often a frame wore the exposure that was asked for). Labels come from
 what the sensor measured, never from what was requested. See `examples/exposure_pair_viewer.py`
 and the Dual Exposure section of the firmware README.
 
-**Legacy auto** — the default. `AeEnable` on: one auto-metered stream, no alternation, the
-pre-dual-exposure behaviour, so a client that has never heard of labels is not handed a stream
-where half the frames are deliberately wrong. `set_auto_exposure(True)` returns to it
-explicitly. Every frame is labelled `"short"` while it runs (nothing to tell apart),
-the targets keep being recorded so `set_auto_exposure(False)` resumes them, and
+**The AE, and its profiles** — the default. `AeEnable` on: one auto-metered stream, no
+alternation, the pre-dual-exposure behaviour, so a client that has never heard of labels is not
+handed a stream where half the frames are deliberately wrong. `set_auto_exposure(mode)` takes
+`"normal"` (stock Pi metering, the default), `"highlight"` (caps the brightest 2% so a bright
+light stops blowing out) or `"off"` (back to the two targets). The profiles live in the
+camera's `custom_ov5647.json` and are passed by name; switching costs a frame, not a rebuild.
+`get_exposure_stats()["ae_mode"]` reports the current one. Every frame is labelled `"short"` while it runs (nothing to tell apart),
+the targets keep being recorded so `set_auto_exposure("off")` resumes them, and
 `get_exposure_stats()["auto"]` reports the mode. It is a runtime control, so it costs a frame,
 not a rebuild.
 
