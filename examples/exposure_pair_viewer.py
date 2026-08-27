@@ -318,7 +318,7 @@ def main():
                     "manual": "manual: the two absolute targets are back, 15Hz each",
                     "normal": "AE normal: one auto-metered stream at 30Hz",
                     "highlight": "AE highlight: one stream, metered for the bright light",
-                    "ae_dual": "AE dual: normal and highlight alternating, 15Hz each",
+                    "ae_dual": "AE dual: two ISP channels, beam + room, 15Hz each",
                 }[state["ae"]])
             elif key == ord("l"):
                 state["awb_locked"] = not state["awb_locked"]

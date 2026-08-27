@@ -328,10 +328,12 @@ class Stereo4DCameraHandler:
                     0.4, so a bright light stops blowing out -- at the cost of a dark room.
                     One stream, 30Hz.
                 ``"ae_dual"``
-                    Both profiles, alternating frame by frame, 15Hz each. The beam frame
-                    arrives as ``"short"`` and the room frame as ``"long"``, the same shape
-                    as ``manual`` -- except the AE chooses both exposures, so each follows
-                    the scene instead of being set once.
+                    Both profiles at once, through the ISP's unmerged HDR: two AGC channels
+                    run side by side, each metering for its own half of the scene, and the
+                    ISP alternates the captures and tags each frame. The beam frame arrives
+                    as ``"short"`` and the room frame as ``"long"``, the same shape as
+                    ``manual`` -- except the AE chooses both exposures, so each follows the
+                    scene instead of being set once. 15Hz each.
 
             What ``normal`` and ``highlight`` mean lives in the camera's
             ``custom_ov5647.json`` and can be retuned there without changing this call.

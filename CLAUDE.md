@@ -70,16 +70,18 @@ and the Dual Exposure section of the firmware README.
 
 **Exposure modes** — `set_auto_exposure(mode)` takes four: `"manual"` (two absolute targets,
 15Hz each), `"normal"` (AE, stock Pi metering, one stream at 30Hz — the default), `"highlight"`
-(AE capping the brightest 2%, one stream at 30Hz) and `"ae_dual"` (both profiles alternating,
-15Hz each, `highlight` on `short` and `normal` on `long`). `normal` is the default so a client
-that has never heard of labels is not handed a stream where half the frames are deliberately
-wrong. The profiles live in the camera's `custom_ov5647.json` and are passed by name; switching
-costs a frame, not a rebuild. `ae_dual` has no targets to label against, so each eye learns
-what its own AE settles on under each profile and splits on the midpoint.
-`get_exposure_stats()["ae_mode"]` reports the current mode, `["ae_learned"]` the learned pair. Every frame is labelled `"short"` while it runs (nothing to tell apart),
-the targets keep being recorded so `set_auto_exposure("manual")` resumes them, and
-`get_exposure_stats()["auto"]` reports the mode. It is a runtime control, so it costs a frame,
-not a rebuild.
+(AE capping the brightest 2%, one stream at 30Hz) and `"ae_dual"` (the ISP's unmerged HDR: two
+AGC channels side by side, beam on `short` and room on `long`, 15Hz each). `normal` is the
+default so a client that has never heard of labels is not handed a stream where half the frames
+are deliberately wrong. Switching mode costs a frame, not a rebuild — every one is a runtime
+control, and the tuning the HDR channels need is written at every build regardless of mode.
+
+Under the single-profile modes every frame is labelled `"short"` (nothing to tell apart). The
+manual targets keep being recorded whatever runs, so `set_auto_exposure("manual")` resumes
+them. `get_exposure_stats()["ae_mode"]` reports the current mode and `["hdr_active"]` whether
+the two channels are really running. Do **not** alternate `AeConstraintMode` frame by frame:
+`rpi.agc` filters toward its target at speed 0.2, so a two-frame square wave comes back as its
+mean and both exposures land in the same place.
 
 **`Stereo4DCameraInfo`** — holds per-camera calibration: `k` (intrinsics), `d` (distortion), `r`, `p`, `extrinsic_matrix`, `rect_matrix`.
 
