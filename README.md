@@ -80,7 +80,12 @@ python3 examples/simple_stream.py
 One exposure cannot hold both a bright light and the room around it. The camera can alternate
 two separately correct exposures — a short one metered for the light, a long one for the rest —
 and tags every frame with which one it is. Both arrive interleaved on the same stream, so the
-handler keeps the newest of each:
+handler keeps the newest of each.
+
+**It is opt-in.** The camera comes up in legacy auto, and `set_exposure_pair()` is what turns
+dual on. Call it once; the camera stays in dual for as long as this handler stays connected,
+and returns to auto when the connection ends. A client that never calls it gets the single
+auto-metered stream the camera has always produced.
 
 ```python
 handler.set_exposure_pair(short_us=4000, long_us=25000)
@@ -97,6 +102,23 @@ Both targets are absolute microseconds pushed straight at the sensor with the AE
 change lands on the **next frame** and nothing ever rebuilds the camera. Each exposure is
 delivered at half the capture rate — 15 Hz each at 30 fps — and both are clamped below the
 frame period (31333us at 30 fps).
+
+### Legacy auto
+
+The default, and where `set_auto_exposure()` returns you. The camera's own AE: one
+auto-metered stream, no alternation, the way it ran before the two targets existed. It
+carries the old limits with it — the two eyes meter independently, and one exposure cannot
+hold the bright light and the room at once.
+
+```python
+handler.set_auto_exposure(True)    # camera meters for itself
+handler.set_auto_exposure(False)   # back to the pair last set through set_exposure_pair
+```
+
+Every frame arrives labelled `"short"` while auto runs, since there is nothing to tell apart,
+so `get_last_frame("short")` sees the full rate and `get_last_frame("long")` stops updating.
+`get_exposure_stats()["auto"]` says which mode is running. Like the pair, it lands on the next
+frame — nothing rebuilds.
 
 A frame caught while an exposure change was still landing is labelled `"unknown"` rather than
 guessed at, and `get_last_frame("short"|"long")` never returns one. `get_exposure_stats()`

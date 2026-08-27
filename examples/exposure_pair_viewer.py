@@ -17,8 +17,8 @@ Keys
     e / d     analogue gain -/+ on the focused stream
     tab       move focus between short and long
     f         fine steps (x0.2)
-    n         cycle hold_n 1..4 (frames held before switching; 1 is normal)
     l         toggle the AWB lock
+    n         toggle the camera AE (legacy auto: it meters for itself, one stream)
     p         dump the current short and long frames as PNGs
     esc / x   quit
 """
@@ -136,16 +136,14 @@ def draw_hud(canvas, state, views, stats, rates, notice):
     # Green while pairs are actually landing; desync is the honest read on that.
     summary_colour = HUD_OK if (out_of_sync or 0) <= 10 else HUD_WARN
     summary = (
-        f"hold_n {state['hold_n']} "
-        f"| unknown {fmt(unknown,'%',1)} "
+        f"unknown {fmt(unknown,'%',1)} "
         f"| desync {fmt(out_of_sync,'%',1)} "
         f"| cadence {fmt(cadence,'%',1)} "
         f"| cam pairs S/L {stats.get('pairs_short','--')}/{stats.get('pairs_long','--')}"
     )
     second = (
-
+        f"| exposure {'AUTO (legacy)' if state['auto'] else 'dual'} "
         f"| awb {'locked' if state['awb_locked'] else 'auto'} "
-
         f"| step {'fine' if state['fine'] else 'coarse'}"
     )
     cv2.putText(canvas, summary, (12, 72), font, 0.5, summary_colour, 1, cv2.LINE_AA)
@@ -168,7 +166,6 @@ def send_pair(handler, state):
         long_us=state["long_us"],
         short_gain=state["short_gain"],
         long_gain=state["long_gain"],
-        hold_n=state["hold_n"],
     )
 
 
@@ -199,8 +196,6 @@ def main():
                         help="long exposure target in microseconds")
     parser.add_argument("--short-gain", type=float, default=1.0)
     parser.add_argument("--long-gain", type=float, default=2.0)
-    parser.add_argument("--hold-n", type=int, default=1,
-                        help="frames to hold each exposure before switching")
     parser.add_argument("--awb-gains", default="2.0,2.0",
                         help="red,blue gains used when the AWB lock is on")
     parser.add_argument("--pane-width", type=int, default=640,
@@ -218,7 +213,8 @@ def main():
         "long_us": args.long_us,
         "short_gain": args.short_gain,
         "long_gain": args.long_gain,
-        "hold_n": max(1, args.hold_n),
+        # The camera comes up in legacy auto; the send_pair() below is what takes it out.
+        "auto": False,
         "focus": SHORT,
         "fine": False,
         "awb_locked": False,
@@ -296,9 +292,13 @@ def main():
                 state["focus"] = LONG if state["focus"] == SHORT else SHORT
             elif key == ord("f"):
                 state["fine"] = not state["fine"]
-            elif key == ord("n"):
-                state["hold_n"] = state["hold_n"] % 4 + 1
-                changed = True
+            elif key in (ord("n"), ord("N")):
+                state["auto"] = not state["auto"]
+                handler.set_auto_exposure(state["auto"])
+                announce(
+                    "legacy auto exposure: the camera meters for itself, one stream"
+                    if state["auto"] else "dual exposure: the two targets are back"
+                )
             elif key == ord("l"):
                 state["awb_locked"] = not state["awb_locked"]
                 handler.set_awb_gains(awb_gains if state["awb_locked"] else None)
@@ -309,6 +309,8 @@ def main():
 
             if changed:
                 # Every change lands on the next frame, so there is nothing to debounce.
+                # Sending a pair is also what leaves auto, so the HUD has to follow.
+                state["auto"] = False
                 send_pair(handler, state)
     except KeyboardInterrupt:
         pass

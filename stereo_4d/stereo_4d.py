@@ -277,11 +277,16 @@ class Stereo4DCameraHandler:
             return False
 
     def set_exposure_pair(self, short_us=None, long_us=None, short_gain=None,
-                          long_gain=None, hold_n=None):
+                          long_gain=None):
         """Set the two exposure targets the camera alternates between.
 
         Absolute microseconds, pushed straight at the sensor with the AE off. Every change
         lands on the next frame -- nothing here rebuilds the camera.
+
+        The camera starts in legacy auto, so **this is also what turns dual exposure on**.
+        Sending it once is enough; the camera stays in dual for as long as this connection
+        lasts, and returns to auto when the connection ends. A client that never calls this
+        gets the single auto-metered stream the camera has always produced.
 
         Args:
             short_us (int): short exposure target in microseconds, for the bright light
@@ -289,9 +294,6 @@ class Stereo4DCameraHandler:
             long_us (int): long exposure target in microseconds, for the rest of the room.
             short_gain (float): analogue gain for the short exposure.
             long_gain (float): analogue gain for the long exposure.
-            hold_n (int): hold each exposure this many frames before switching. 1 alternates
-                every frame, which is what you want; higher values exist only as an escape
-                hatch.
 
         Both targets are clamped below the camera's frame period, so at 30 fps neither can
         exceed 31333us. Setting short_us equal to long_us asks for a single exposure.
@@ -300,12 +302,29 @@ class Stereo4DCameraHandler:
         for key, value in (
             ("short_us", short_us), ("long_us", long_us),
             ("short_gain", short_gain), ("long_gain", long_gain),
-            ("hold_n", hold_n),
         ):
             if value is not None:
                 payload[key] = value
         self.__logger.info(f"Sending set_exposure_pair command: {payload}")
         return self.__send_command(payload, "exposure pair command")
+
+    def set_auto_exposure(self, enable=True):
+        """Legacy mode: hand exposure back to the camera's own AE.
+
+        One auto-metered stream instead of the two alternating targets -- the way the
+        camera ran before dual exposure existed, kept so an older client still gets a
+        usable picture. Lands on the next frame; nothing rebuilds.
+
+        It carries the old limits with it: the two eyes meter independently, so they can
+        disagree on the same scene, and one exposure cannot hold the surgical beam and the
+        room at once. Every frame arrives labelled "short", since there is nothing to tell
+        apart. Pass enable=False to take exposure back; the last pair set through
+        set_exposure_pair resumes.
+        """
+        self.__logger.info(f"Sending set_auto_exposure command: enable={enable}")
+        return self.__send_command(
+            {"action": "set_auto_exposure", "enable": bool(enable)}, "auto exposure command"
+        )
 
     def set_awb_gains(self, gains):
         """Pin the white balance to (red, blue) gains, or pass None to let AWB run.
