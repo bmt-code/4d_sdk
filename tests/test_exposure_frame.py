@@ -46,15 +46,13 @@ def bare_handler():
     return handler
 
 
-def frame_message(label="short", left_us=4013, right_us=4013, engine="manual"):
+def frame_message(label="short", left_us=4013, right_us=4013):
     return {
         "msg_type": "frame",
         "timestamp": 123.0,
         "exposure": label,
-        "exposure_engine": engine,
         "exposure_time_us": {"left": left_us, "right": right_us},
         "analogue_gain": {"left": 1.0, "right": 1.5},
-        "hdr_channel": {"left": 1, "right": 1},
         "lux": 320.5,
     }
 
@@ -62,10 +60,8 @@ def frame_message(label="short", left_us=4013, right_us=4013, engine="manual"):
 def test_parse():
     exposure = parse_exposure(frame_message())
     check("parse: label", exposure["label"], "short")
-    check("parse: engine", exposure["engine"], "manual")
     check("parse: left exposure", exposure["left"]["exposure_time_us"], 4013)
     check("parse: right gain", exposure["right"]["analogue_gain"], 1.5)
-    check("parse: hdr channel", exposure["left"]["hdr_channel"], 1)
     check("parse: lux", exposure["lux"], 320.5)
 
 
@@ -137,14 +133,15 @@ def test_exposure_fps():
 def test_status_carries_exposure_stats():
     handler = bare_handler()
     status = handler._Stereo4DCameraHandler__handle_camera_status
-    stats = {"engine": "manual", "phase_lock_percent": 97.5, "short_us": 4000}
+    stats = {"cadence_percent": 99.8, "out_of_sync_percent": 0.2, "short_us": 4000}
 
     status({"msg_type": "status", "data": "started", "exposure_stats": stats})
-    check("status: stats stored", handler.get_exposure_stats()["phase_lock_percent"], 97.5)
+    check("status: stats stored", handler.get_exposure_stats()["out_of_sync_percent"], 0.2)
 
     # A status without stats (older firmware) must not wipe what is known.
     status({"msg_type": "status", "data": "started"})
-    check("status: stats kept when absent", handler.get_exposure_stats()["engine"], "manual")
+    check("status: stats kept when absent",
+          handler.get_exposure_stats()["cadence_percent"], 99.8)
 
     check("status: getter returns a copy",
           handler.get_exposure_stats() is handler.get_exposure_stats(), False)

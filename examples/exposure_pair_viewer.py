@@ -6,8 +6,8 @@ The camera interleaves two exposures on one stream: a short one metered for the 
 label of the exposure it was taken with, plus the exposure the sensor actually used.
 
 This viewer shows the newest frame of each exposure side by side and lets you retune both
-while watching the scene. Nothing here restarts the stream except an engine switch to "hdr",
-which has to rebuild the camera.
+while watching the scene. Nothing here ever restarts the stream: every change lands on the
+next frame.
 
     python3 examples/exposure_pair_viewer.py --ip 172.31.1.77
 
@@ -17,12 +17,8 @@ Keys
     e / d     analogue gain -/+ on the focused stream
     tab       move focus between short and long
     f         fine steps (x0.2)
-    m         cycle exposure engine: auto -> manual -> hdr
-    n         cycle hold_n 1..4 (manual engine: frames held before switching)
-    o         toggle the AE profile (hdr engine: the dual-exposure split on/off)
-    v         toggle the hdr shutter/gain envelope (off = profiles choose the exposure)
+    n         cycle hold_n 1..4 (frames held before switching; 1 is normal)
     l         toggle the AWB lock
-    k         toggle the AE lock (float / frozen)
     p         dump the current short and long frames as PNGs
     esc / x   quit
 """
@@ -38,7 +34,6 @@ from stereo_4d import Stereo4DCameraHandler
 
 SHORT = "short"
 LONG = "long"
-ENGINES = ["auto", "manual", "hdr"]
 
 SHORT_STEP_US = 250
 LONG_STEP_US = 1000
@@ -123,7 +118,6 @@ def draw_hud(canvas, state, views, stats, rates, notice):
         target_gain = state[f"{label}_gain"]
         measured_us = view.measured("exposure_time_us")
         measured_gain = view.measured("analogue_gain")
-        channel = view.measured("hdr_channel")
 
         focused = state["focus"] == label
         colour = HUD_FG if focused else HUD_DIM
@@ -134,33 +128,27 @@ def draw_hud(canvas, state, views, stats, rates, notice):
             f"| {fmt(rates.get(label), 'Hz', 1):>7} "
             f"| age {fmt(view.age_ms,'ms'):>7}"
         )
-        if channel is not None:
-            text += f" | ch{channel}"
         cv2.putText(canvas, text, (12, 26 + row * 24), font, 0.55, colour, 1, cv2.LINE_AA)
 
-    phase_lock = stats.get("phase_lock_percent")
     unknown = stats.get("unknown_percent")
-    phase_colour = HUD_OK if (phase_lock or 0) >= 90 else HUD_WARN
-    if state["engine"] == "hdr":
-        source = "envelope+profiles" if state["hdr_envelope"] else "profiles"
-    elif state["engine"] == "manual":
-        source = "targets"
-    else:
-        source = "AE"
     out_of_sync = stats.get("out_of_sync_percent")
+    cadence = stats.get("cadence_percent")
+    # Green while pairs are actually landing; desync is the honest read on that.
+    summary_colour = HUD_OK if (out_of_sync or 0) <= 10 else HUD_WARN
     summary = (
-        f"engine {state['engine']:<6} {source:<17} hold_n {state['hold_n']} "
-        f"| phase-lock {fmt(phase_lock,'%',1)} | unknown {fmt(unknown,'%',1)} "
+        f"hold_n {state['hold_n']} "
+        f"| unknown {fmt(unknown,'%',1)} "
         f"| desync {fmt(out_of_sync,'%',1)} "
+        f"| cadence {fmt(cadence,'%',1)} "
         f"| cam pairs S/L {stats.get('pairs_short','--')}/{stats.get('pairs_long','--')}"
     )
     second = (
-        f"profile {'split (on)' if state['profile_on'] else 'room (off)'} "
+
         f"| awb {'locked' if state['awb_locked'] else 'auto'} "
-        f"| ae {'locked' if state['ae_locked'] else 'float'} "
+
         f"| step {'fine' if state['fine'] else 'coarse'}"
     )
-    cv2.putText(canvas, summary, (12, 72), font, 0.5, phase_colour, 1, cv2.LINE_AA)
+    cv2.putText(canvas, summary, (12, 72), font, 0.5, summary_colour, 1, cv2.LINE_AA)
     cv2.putText(canvas, second, (12, 90), font, 0.45, HUD_DIM, 1, cv2.LINE_AA)
 
     if notice:
@@ -180,9 +168,7 @@ def send_pair(handler, state):
         long_us=state["long_us"],
         short_gain=state["short_gain"],
         long_gain=state["long_gain"],
-        engine=state["engine"],
         hold_n=state["hold_n"],
-        hdr_envelope=state["hdr_envelope"],
     )
 
 
@@ -207,8 +193,6 @@ def main():
         epilog=__doc__.split("Keys", 1)[1],
     )
     parser.add_argument("--ip", default="172.31.1.77", help="camera IP address")
-    parser.add_argument("--engine", default="manual", choices=ENGINES,
-                        help="exposure engine to start in (default: manual)")
     parser.add_argument("--short-us", type=int, default=4000,
                         help="short exposure target in microseconds")
     parser.add_argument("--long-us", type=int, default=25000,
@@ -216,10 +200,7 @@ def main():
     parser.add_argument("--short-gain", type=float, default=1.0)
     parser.add_argument("--long-gain", type=float, default=2.0)
     parser.add_argument("--hold-n", type=int, default=1,
-                        help="manual engine: frames to hold each exposure before switching")
-    parser.add_argument("--hdr-envelope", action="store_true",
-                        help="hdr engine: cap each channel's shutter/gain at the targets "
-                             "instead of letting its AE profile choose")
+                        help="frames to hold each exposure before switching")
     parser.add_argument("--awb-gains", default="2.0,2.0",
                         help="red,blue gains used when the AWB lock is on")
     parser.add_argument("--pane-width", type=int, default=640,
@@ -233,7 +214,6 @@ def main():
     awb_gains = tuple(float(x) for x in args.awb_gains.split(","))
 
     state = {
-        "engine": args.engine,
         "short_us": args.short_us,
         "long_us": args.long_us,
         "short_gain": args.short_gain,
@@ -242,11 +222,6 @@ def main():
         "focus": SHORT,
         "fine": False,
         "awb_locked": False,
-        "ae_locked": False,
-        # Under the hdr engine this is the dual-exposure switch: on = short channel meters
-        # the bright light while the long channel meters the room.
-        "profile_on": True,
-        "hdr_envelope": args.hdr_envelope,
     }
 
     handler = Stereo4DCameraHandler(ip=args.ip)
@@ -266,13 +241,6 @@ def main():
     views = {SHORT: StreamView(SHORT), LONG: StreamView(LONG)}
     notice = ""
     notice_until = 0.0
-    # The hdr engine applies new targets by rebuilding the camera, so firing on every
-    # keypress would stall the stream for the whole time you are tuning. Wait for the
-    # keypresses to stop first. The manual engine applies on the next frame, so it sends
-    # straight away.
-    pending_send_at = None
-    HDR_SEND_DEBOUNCE_S = 0.6
-
     def announce(text, seconds=2.5):
         nonlocal notice, notice_until
         notice = text
@@ -289,11 +257,6 @@ def main():
             canvas = np.zeros((pane_h + HUD_HEIGHT, args.pane_width * 2, 3), dtype=np.uint8)
             canvas[HUD_HEIGHT:, : args.pane_width] = pane(views[SHORT], args.pane_width, pane_h)
             canvas[HUD_HEIGHT:, args.pane_width:] = pane(views[LONG], args.pane_width, pane_h)
-
-            if pending_send_at is not None and time.time() >= pending_send_at:
-                pending_send_at = None
-                send_pair(handler, state)
-                announce("applying new targets ...", 1.5)
 
             if notice and time.time() > notice_until:
                 notice = ""
@@ -336,45 +299,17 @@ def main():
             elif key == ord("n"):
                 state["hold_n"] = state["hold_n"] % 4 + 1
                 changed = True
-            elif key == ord("m"):
-                state["engine"] = ENGINES[(ENGINES.index(state["engine"]) + 1) % len(ENGINES)]
-                pending_send_at = None
-                send_pair(handler, state)
-                # Any engine switch rebuilds the camera: manual needs its controls set when
-                # the stream is configured, and hdr needs a patched tuning.
-                announce(f"engine -> {state['engine']}, rebuilding camera ...", 4.0)
-            elif key == ord("o"):
-                state["profile_on"] = not state["profile_on"]
-                handler.set_exposure_control(state["profile_on"])
-                announce(
-                    "AE profile: dual-exposure split"
-                    if state["profile_on"] else "AE profile: both channels meter the room"
-                )
-            elif key == ord("v"):
-                state["hdr_envelope"] = not state["hdr_envelope"]
-                changed = True
-                announce(
-                    "hdr exposure from the targets (envelope on)"
-                    if state["hdr_envelope"] else "hdr exposure from the AE profiles"
-                )
             elif key == ord("l"):
                 state["awb_locked"] = not state["awb_locked"]
                 handler.set_awb_gains(awb_gains if state["awb_locked"] else None)
                 announce(f"awb {'locked to ' + str(awb_gains) if state['awb_locked'] else 'auto'}")
-            elif key == ord("k"):
-                state["ae_locked"] = not state["ae_locked"]
-                handler.set_exposure_lock(state["ae_locked"])
-                announce(f"ae {'locked' if state['ae_locked'] else 'floating'}")
             elif key == ord("p"):
                 written = dump_pair(views, args.dump_dir)
                 announce(f"dumped {len(written)} frame(s) to {args.dump_dir}")
 
             if changed:
-                if state["engine"] == "hdr":
-                    pending_send_at = time.time() + HDR_SEND_DEBOUNCE_S
-                else:
-                    pending_send_at = None
-                    send_pair(handler, state)
+                # Every change lands on the next frame, so there is nothing to debounce.
+                send_pair(handler, state)
     except KeyboardInterrupt:
         pass
     finally:

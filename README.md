@@ -83,29 +83,25 @@ and tags every frame with which one it is. Both arrive interleaved on the same s
 handler keeps the newest of each:
 
 ```python
-handler.set_exposure_pair(short_us=4000, long_us=25000, engine="manual")
+handler.set_exposure_pair(short_us=4000, long_us=25000)
 
 short = handler.get_last_frame("short")
 long_frame = handler.get_last_frame("long")
 print(short.exposure_label, short.exposure_time_us)   # "short" 4013
 
 handler.get_exposure_fps()     # {"short": 9.8, "long": 9.9} - each is half the frame rate
-handler.get_exposure_stats()   # targets, measured exposures, phase_lock_percent
+handler.get_exposure_stats()   # targets, measured exposures, out_of_sync/cadence percent
 ```
 
-`engine` picks how the two are produced: `"manual"` (absolute microseconds, applied on the
-next frame), `"hdr"` (the ISP alternates two AGC channels on its own, each metering with one
-of the camera's two proven AE profiles; changes rebuild the camera, so the stream pauses
-~1-2s) or `"auto"` (one exposure, AE running).
-
-Under `"hdr"`, `short_us`/`long_us` are ignored unless you pass `hdr_envelope=True` — the
-per-channel AE chooses the exposure, and `set_exposure_control()` selects between the split
-(short channel meters the bright light, long channel meters the room) and both channels
-metering the room.
+Both targets are absolute microseconds pushed straight at the sensor with the AE off, so a
+change lands on the **next frame** and nothing ever rebuilds the camera. Each exposure is
+delivered at half the capture rate — 15 Hz each at 30 fps — and both are clamped below the
+frame period (31333us at 30 fps).
 
 A frame caught while an exposure change was still landing is labelled `"unknown"` rather than
-guessed at, and `get_last_frame("short"|"long")` never returns one. `set_exposure_lock(True)`
-freezes the AE where it is — the hook for "the tool is visible at this exposure, stop hunting".
+guessed at, and `get_last_frame("short"|"long")` never returns one. `get_exposure_stats()`
+reports `cadence_percent` (how often a frame wore the exposure that was asked for) and
+`out_of_sync_percent` (how often a pair was dropped for the eyes being too far apart).
 
 Tune both exposures interactively against a live scene with:
 

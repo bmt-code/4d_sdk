@@ -29,18 +29,14 @@ EXPOSURE_UNKNOWN = "unknown"
 
 
 class Stereo4DFrame:
-    def __init__(
-        self, timestamp=None, frame_id=None, image=None, exposure_control=None, exposure=None
-    ):
+    def __init__(self, timestamp=None, frame_id=None, image=None, exposure=None):
         self.timestamp = timestamp
         self.frame_id = frame_id
         self.image = image
-        self.exposure_control = exposure_control
         # Which of the two exposures this frame is, and what the sensor actually used to
         # take it:
         #   {"label": "short"|"long"|"unknown",
-        #    "engine": "auto"|"manual"|"hdr",
-        #    "left":  {"exposure_time_us", "analogue_gain", "hdr_channel"},
+        #    "left":  {"exposure_time_us", "analogue_gain"},
         #    "right": {...},
         #    "lux": ...}
         # The camera reports what it measured, never what was requested, so a frame caught
@@ -63,7 +59,6 @@ class Stereo4DFrame:
             timestamp=self.timestamp,
             frame_id=self.frame_id,
             image=self.image.copy() if self.image is not None else None,
-            exposure_control=self.exposure_control,
             exposure=copy_module.deepcopy(self.exposure),
         )
 
@@ -244,8 +239,10 @@ class Stereo4DCameraHandler:
     def get_exposure_stats(self):
         """Exposure telemetry from the camera, refreshed with every 1Hz status message.
 
-        Includes the targets in force, the exposures the sensor actually settled on, and how
-        often the two eyes agreed on which exposure a frame was (`phase_lock_percent`).
+        Includes the targets in force, the exposures the sensor actually settled on, how
+        many pairs were dropped because the eyes were too far apart in time
+        (`out_of_sync_percent`), and how often a frame came back wearing the exposure the
+        cadence asked for (`cadence_percent`).
         """
         return dict(self.__exposure_stats)
 
@@ -270,28 +267,6 @@ class Stereo4DCameraHandler:
         else:
             return True
 
-    def set_exposure_control(self, enable: bool):
-        """Selects which AE profile the camera meters with.
-
-        Args:
-            enable (bool): True for the highlight-metered profile, False for the
-                room-metered one.
-
-        Under the hdr engine this is the dual-exposure switch: True gives the split (short
-        channel on the highlight profile, long channel on the room profile), False puts both
-        channels on the room profile. Inert under the manual engine, where the AE is off.
-        """
-        self.__logger.info(f"Sending set_exposure command: enable={enable}")
-        try:
-            command_payload = {
-                "action": "set_exposure",
-                "enable": enable
-            }
-            status_msg = json.dumps(command_payload).encode()
-            self.pub_socket.send_multipart([b"command", status_msg], zmq.NOBLOCK)
-        except Exception as e:
-            self.__logger.error(f"Failed to send exposure command: {e}")
-
     def __send_command(self, payload, description):
         try:
             message = json.dumps(payload).encode()
@@ -302,63 +277,35 @@ class Stereo4DCameraHandler:
             return False
 
     def set_exposure_pair(self, short_us=None, long_us=None, short_gain=None,
-                          long_gain=None, engine=None, hold_n=None, hdr_envelope=None):
+                          long_gain=None, hold_n=None):
         """Set the two exposure targets the camera alternates between.
 
+        Absolute microseconds, pushed straight at the sensor with the AE off. Every change
+        lands on the next frame -- nothing here rebuilds the camera.
+
         Args:
-            short_us (int): short exposure target in microseconds, metered for the bright
-                light (the surgical beam).
-            long_us (int): long exposure target in microseconds, metered for the rest of the
-                room.
+            short_us (int): short exposure target in microseconds, for the bright light
+                (the surgical beam).
+            long_us (int): long exposure target in microseconds, for the rest of the room.
             short_gain (float): analogue gain for the short exposure.
             long_gain (float): analogue gain for the long exposure.
-            engine (str): "auto" (single exposure, AE running), "manual" (camera alternates
-                these absolute values, applied on the next frame) or "hdr" (the ISP
-                alternates two AGC channels on its own; the targets reach it through the
-                camera tuning, so the camera is rebuilt and the stream pauses ~1-2s).
-            hold_n (int): manual engine only, hold each exposure this many frames before
-                switching.
-            hdr_envelope (bool): hdr engine only. By default the two AGC channels are driven
-                by their metering profiles and short_us/long_us are ignored; set this to
-                also cap each channel's shutter and gain at the requested value. A ceiling,
-                not a target -- the AGC can still settle shorter.
+            hold_n (int): hold each exposure this many frames before switching. 1 alternates
+                every frame, which is what you want; higher values exist only as an escape
+                hatch.
 
-        Under the hdr engine the exposures come from the per-channel AE profiles, and
-        `set_exposure_control()` is what selects between them: True gives the dual-exposure
-        split (short channel meters the bright light, long channel meters the room), False
-        puts both channels on the room profile.
-
-        Setting short_us equal to long_us is how you ask for a single exposure without
-        leaving the alternating engine.
+        Both targets are clamped below the camera's frame period, so at 30 fps neither can
+        exceed 31333us. Setting short_us equal to long_us asks for a single exposure.
         """
         payload = {"action": "set_exposure_pair"}
         for key, value in (
             ("short_us", short_us), ("long_us", long_us),
             ("short_gain", short_gain), ("long_gain", long_gain),
-            ("engine", engine), ("hold_n", hold_n), ("hdr_envelope", hdr_envelope),
+            ("hold_n", hold_n),
         ):
             if value is not None:
                 payload[key] = value
         self.__logger.info(f"Sending set_exposure_pair command: {payload}")
         return self.__send_command(payload, "exposure pair command")
-
-    def set_exposure_mode(self, engine):
-        """Switch exposure engine: "auto", "manual" or "hdr"."""
-        self.__logger.info(f"Sending set_exposure_mode command: engine={engine}")
-        return self.__send_command(
-            {"action": "set_exposure_mode", "engine": engine}, "exposure mode command"
-        )
-
-    def set_exposure_lock(self, locked: bool):
-        """Freeze the auto exposure where it is, or let it float again.
-
-        This is the hook the tracker uses: once a tool is found at a given exposure, lock it
-        so the AE stops hunting; when the tool is lost, let it float and search again.
-        """
-        self.__logger.info(f"Sending set_exposure_lock command: locked={locked}")
-        return self.__send_command(
-            {"action": "set_exposure_lock", "locked": bool(locked)}, "exposure lock command"
-        )
 
     def set_awb_gains(self, gains):
         """Pin the white balance to (red, blue) gains, or pass None to let AWB run.
@@ -751,7 +698,6 @@ class Stereo4DCameraHandler:
         frame = Stereo4DFrame(
             timestamp=timestamp,
             image=image,
-            exposure_control=msg_json.get("exposure_control", None),
             exposure=self.__parse_exposure(msg_json),
         )
 
@@ -784,21 +730,11 @@ class Stereo4DCameraHandler:
 
         left_time, right_time = per_eye("exposure_time_us")
         left_gain, right_gain = per_eye("analogue_gain")
-        left_channel, right_channel = per_eye("hdr_channel")
         return {
             "label": msg_json.get("exposure") or EXPOSURE_UNKNOWN,
-            "engine": msg_json.get("exposure_engine"),
             "lux": msg_json.get("lux"),
-            "left": {
-                "exposure_time_us": left_time,
-                "analogue_gain": left_gain,
-                "hdr_channel": left_channel,
-            },
-            "right": {
-                "exposure_time_us": right_time,
-                "analogue_gain": right_gain,
-                "hdr_channel": right_channel,
-            },
+            "left": {"exposure_time_us": left_time, "analogue_gain": left_gain},
+            "right": {"exposure_time_us": right_time, "analogue_gain": right_gain},
         }
 
     def __record_exposure_arrival(self, frame: Stereo4DFrame):

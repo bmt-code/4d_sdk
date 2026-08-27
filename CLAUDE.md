@@ -52,15 +52,17 @@ against a connected camera and checking frame reception/calibration loading.
 - `"status"` → update heartbeat timestamp
 
 **`Stereo4DFrame`** — holds `timestamp`, `frame_id`, `image` (numpy array) and `exposure`
-(`{"label": "short"|"long"|"unknown", "engine", "left": {...}, "right": {...}, "lux"}`), with
+(`{"label": "short"|"long"|"unknown", "left": {...}, "right": {...}, "lux"}`), with
 `exposure_label` and `exposure_time_us` shortcuts.
 
-**Dual exposure** — the camera can alternate a short exposure (metered for a bright light) and
-a long one (metered for the room), interleaved on the same stream and labelled per frame.
-`set_exposure_pair()`, `set_exposure_mode()`, `set_exposure_lock()` and `set_awb_gains()` send
-the commands; `get_last_frame("short"|"long")` returns the newest frame of each,
-`get_exposure_fps()` their delivery rates, and `get_exposure_stats()` the camera's telemetry
-(`phase_lock_percent` is how often the two eyes agreed on a frame's exposure). Labels come from
+**Dual exposure** — the camera alternates a short exposure (for a bright light) and a long one
+(for the room), interleaved on the same stream and labelled per frame. Both are absolute
+microseconds with the AE off, so every change lands on the next frame and nothing rebuilds the
+camera. `set_exposure_pair()` and `set_awb_gains()` send the commands;
+`get_last_frame("short"|"long")` returns the newest frame of each, `get_exposure_fps()` their
+delivery rates, and `get_exposure_stats()` the camera's telemetry (`out_of_sync_percent` is
+how often a pair was dropped for the eyes being too far apart in time; `cadence_percent` is
+how often a frame wore the exposure that was asked for). Labels come from
 what the sensor measured, never from what was requested. See `examples/exposure_pair_viewer.py`
 and the Dual Exposure section of the firmware README.
 
