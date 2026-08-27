@@ -73,8 +73,11 @@ and the Dual Exposure section of the firmware README.
 (AE capping the brightest 2%, one stream at 30Hz) and `"ae_dual"` (the ISP's unmerged HDR: two
 AGC channels side by side, beam on `short` and room on `long`, 15Hz each). `normal` is the
 default so a client that has never heard of labels is not handed a stream where half the frames
-are deliberately wrong. Switching mode costs a frame, not a rebuild — every one is a runtime
-control, and the tuning the HDR channels need is written at every build regardless of mode.
+are deliberately wrong. Switching among `manual`/`normal`/`highlight` costs a frame — those are
+runtime controls. Crossing the `ae_dual` boundary **rebuilds the camera** (~1.5s): `HdrMode` only
+applies at configure time, and writing it live makes the ISP return `HdrChannelNone` frames that
+the pairing drops, seen as one pane blinking. The tuning the HDR channels need is still written
+at every build regardless of mode.
 
 Under the single-profile modes every frame is labelled `"short"` (nothing to tell apart). The
 manual targets keep being recorded whatever runs, so `set_auto_exposure("manual")` resumes

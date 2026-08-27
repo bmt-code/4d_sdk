@@ -117,9 +117,12 @@ updating.
 | `"highlight"` | one | 30 Hz | hold that 2% between 0.2 and 0.4 instead — a bright light stops blowing out, at the cost of a darker room. |
 | `"ae_dual"` | short + long | 15 Hz each | the ISP's unmerged HDR: two AGC channels side by side, one metering the beam (`short`) and one the room (`long`). Same shape as `manual`, except the AE picks both exposures so each follows the scene. |
 
-Switching mode is a runtime control, so it costs a frame, not a rebuild. Whenever the AE
-runs it carries its own limits — the two eyes meter independently, and under a single profile
-one exposure cannot hold the bright light and the room at once.
+Switching between `manual`, `normal` and `highlight` costs a frame. Crossing into or out of
+`ae_dual` **rebuilds the camera** — about 1.5 s with no frames — because `HdrMode` only applies
+at configure time. Worth knowing if you drive the mode from a control loop.
+
+Whenever the AE runs it carries its own limits — the two eyes meter independently, and under a
+single profile one exposure cannot hold the bright light and the room at once.
 
 ```python
 handler.set_auto_exposure("normal")      # stock AE, one stream

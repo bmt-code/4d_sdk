@@ -239,10 +239,28 @@ class Stereo4DCameraHandler:
     def get_exposure_stats(self):
         """Exposure telemetry from the camera, refreshed with every 1Hz status message.
 
-        Includes the targets in force, the exposures the sensor actually settled on, how
-        many pairs were dropped because the eyes were too far apart in time
-        (`out_of_sync_percent`), and how often a frame came back wearing the exposure the
-        cadence asked for (`cadence_percent`).
+        Always present:
+
+            ``ae_mode``            the mode in force: manual / normal / highlight / ae_dual
+            ``short_us``           the manual targets and gains, kept whatever mode runs
+            ``long_us``            (so ``set_auto_exposure("manual")`` resumes them)
+            ``short_gain``
+            ``long_gain``
+            ``measured``           per label, what the sensor actually settled on
+            ``unknown_percent``    frames that could not be labelled, so were dropped
+            ``out_of_sync_percent``  pairs dropped for the eyes being too far apart in time
+
+        Mode-specific, and meaningless outside it:
+
+            ``cadence_percent``    manual only -- how often a frame came back wearing the
+                                   exposure the cadence asked for. Low means the control is
+                                   landing on the wrong frame. ae_dual drives no cadence.
+            ``hdr_active``         ae_dual only -- whether the ISP really is running two AGC
+                                   channels. False means it fell back to one exposure.
+            ``hdr_conflicts``      ae_dual only -- frames whose HdrChannel tag the measured
+                                   exposure contradicted, so they were dropped rather than
+                                   sent to the wrong label. A few around each lighting
+                                   change is the check working; a continuous stream is not.
         """
         return dict(self.__exposure_stats)
 
@@ -309,7 +327,11 @@ class Stereo4DCameraHandler:
         return self.__send_command(payload, "exposure pair command")
 
     def set_auto_exposure(self, mode="normal"):
-        """Pick the exposure mode. Lands on the next frame; nothing rebuilds.
+        """Pick the exposure mode.
+
+        Switching between ``manual``, ``normal`` and ``highlight`` lands on the next frame.
+        Crossing into or out of ``ae_dual`` rebuilds the camera -- about 1.5s, during which no
+        frames arrive -- because HdrMode is only applied when the camera is configured.
 
         Args:
             mode (str): one of
