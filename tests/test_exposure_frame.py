@@ -5,6 +5,7 @@
 """
 import os
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
@@ -147,6 +148,68 @@ def test_status_carries_exposure_stats():
           handler.get_exposure_stats() is handler.get_exposure_stats(), False)
 
 
+def frame_handler():
+    """A handler wired up enough to push frame messages through __handle_frame_message."""
+    handler = bare_handler()
+    prefix = "_Stereo4DCameraHandler__"
+    handler.rectify_internally = False
+    handler.stereo_maps_set = False
+    setattr(handler, prefix + "frame_count_total", 0)
+    setattr(handler, prefix + "frame_drop_count", 0)
+    setattr(handler, prefix + "frame_drop_percent", 0.0)
+    setattr(handler, prefix + "frame_count_in_interval", 0)
+    setattr(handler, prefix + "received_fps", 0)
+    setattr(handler, prefix + "prev_fps_measured_time", time.time())
+    setattr(handler, prefix + "fps_measurement_interval", 1.0)
+    setattr(handler, prefix + "frame_event", threading.Event())
+    setattr(handler, prefix + "frame_callback", None)
+    # Decoding a real JPEG is not what this covers, and it would drag cv2 in.
+    setattr(handler, prefix + "decode_frame", lambda _bytes: object())
+    return handler
+
+
+def test_fps_is_actually_counted():
+    """get_fps() returned None forever: the interval counter was read and reset, never
+    incremented, so every measurement divided zero by the elapsed time.
+
+    Visible in examples/stereo_4d_ros2.py, which publishes "FPS: None".
+    """
+    handler = frame_handler()
+    prefix = "_Stereo4DCameraHandler__"
+    handle = getattr(handler, prefix + "handle_frame_message")
+
+    for _ in range(20):
+        handle(frame_message())
+    check("fps: frames counted in the interval",
+          getattr(handler, prefix + "frame_count_in_interval"), 20)
+    check("fps: no measurement before the interval elapses", handler.get_fps(), None)
+
+    # Backdate the window so the next frame closes it.
+    setattr(handler, prefix + "prev_fps_measured_time", time.time() - 2.0)
+    handle(frame_message())
+    measured = handler.get_fps()
+    check("fps: a rate is reported once the window closes",
+          measured is not None and 9.0 < measured < 12.0, True)
+    check("fps: the counter restarts for the next window",
+          getattr(handler, prefix + "frame_count_in_interval"), 0)
+
+
+def test_a_dropped_frame_is_counted_once():
+    """The drop percentage used to be computed twice, once per branch."""
+    handler = frame_handler()
+    prefix = "_Stereo4DCameraHandler__"
+    handle = getattr(handler, prefix + "handle_frame_message")
+    setattr(handler, prefix + "decode_frame", lambda _bytes: None)
+
+    for _ in range(4):
+        handle(frame_message())
+    check("drops: every undecodable frame counted",
+          getattr(handler, prefix + "frame_drop_count"), 4)
+    check("drops: reported as a percentage of all frames",
+          round(getattr(handler, prefix + "frame_drop_percent")), 100)
+    check("drops: nothing was filed as a frame", handler.get_last_frame(), None)
+
+
 def main():
     for test in (
         test_parse,
@@ -155,6 +218,8 @@ def main():
         test_last_frame_per_label,
         test_exposure_fps,
         test_status_carries_exposure_stats,
+        test_fps_is_actually_counted,
+        test_a_dropped_frame_is_counted_once,
     ):
         print(f"\n--- {test.__name__} ---")
         test()

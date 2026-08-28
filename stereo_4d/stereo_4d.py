@@ -252,15 +252,18 @@ class Stereo4DCameraHandler:
 
         Mode-specific, and meaningless outside it:
 
-            ``cadence_percent``    manual only -- how often a frame came back wearing the
-                                   exposure the cadence asked for. Low means the control is
-                                   landing on the wrong frame. ae_dual drives no cadence.
-            ``hdr_active``         ae_dual only -- whether the ISP really is running two AGC
-                                   channels. False means it fell back to one exposure.
-            ``hdr_conflicts``      ae_dual only -- frames whose HdrChannel tag the measured
-                                   exposure contradicted, so they were dropped rather than
-                                   sent to the wrong label. A few around each lighting
-                                   change is the check working; a continuous stream is not.
+            ``cadence_percent``    the two dual-exposure modes -- how often a frame came
+                                   back wearing the exposure the cadence asked for. Low
+                                   means the control is landing on the wrong frame.
+            ``ae``                 the auto modes -- per label, what its controller last
+                                   metered: ``brightness``, ``setpoint``, ``clipped`` and
+                                   ``rail`` (None / "floor" / "ceiling"). Empty under
+                                   ``manual``.
+            ``ae_railed``          the auto modes -- a controller is asking for more light
+                                   than its band can give. In a dark theatre this means the
+                                   frame rate is the limit: lower the fps and the long
+                                   exposure gets more room. Ceiling rails only; a floor rail
+                                   is a bright scene and is not reported here.
         """
         return dict(self.__exposure_stats)
 
@@ -327,42 +330,29 @@ class Stereo4DCameraHandler:
         return self.__send_command(payload, "exposure pair command")
 
     def set_auto_exposure(self, mode="normal"):
-        """Pick the exposure mode.
+        """Pick the exposure mode. Every switch lands on the next frame.
 
-        Switching between ``manual``, ``normal`` and ``highlight`` lands on the next frame.
-        Crossing into or out of ``ae_dual`` rebuilds the camera -- about 1.5s, during which no
-        frames arrive -- because HdrMode is only applied when the camera is configured.
+        None of the four rebuilds the camera. The sensor is driven identically in all of
+        them -- the AE inside the ISP is never used -- so a mode only changes who writes the
+        two targets. ``ae_dual`` used to cost a ~1.5s teardown because it ran on the ISP's
+        HDR, and HdrMode is a configure-time control; that is gone.
 
         Args:
             mode (str): one of
 
-                ``"manual"``
-                    No AE. The two absolute targets alternate, 15Hz each; the pair last set
-                    through :meth:`set_exposure_pair` is what runs. Nothing follows the
-                    scene, which is the point -- both exposures are exactly what was asked
-                    for, and every frame is labelled from the exposure it came back with.
-                ``"normal"``
-                    The AE, under the stock Raspberry Pi constraint: the brightest 2% of the
-                    image is pulled up to mid-grey. One stream, 30Hz. What the camera does
-                    when nothing says otherwise.
-                ``"highlight"``
-                    The AE, under the tuned constraint: that same 2% is held between 0.2 and
-                    0.4, so a bright light stops blowing out -- at the cost of a dark room.
-                    One stream, 30Hz.
-                ``"ae_dual"``
-                    Both profiles at once, through the ISP's unmerged HDR: two AGC channels
-                    run side by side, each metering for its own half of the scene, and the
-                    ISP alternates the captures and tags each frame. The beam frame arrives
-                    as ``"short"`` and the room frame as ``"long"``, the same shape as
-                    ``manual`` -- except the AE chooses both exposures, so each follows the
-                    scene instead of being set once. 15Hz each.
+                ``"manual"``     the pair from :meth:`set_exposure_pair`, alternating,
+                                 15Hz each. Nothing adapts.
+                ``"normal"``     one exposure, whole-frame metering. 30Hz. The default.
+                ``"highlight"``  one exposure, metering the beam. 30Hz.
+                ``"ae_dual"``    both, alternating, 15Hz each -- short metered like
+                                 highlight, long like normal.
 
-            What ``normal`` and ``highlight`` mean lives in the camera's
-            ``custom_ov5647.json`` and can be retuned there without changing this call.
+        The three auto modes run a control loop on the camera, not the ISP's AGC, and one
+        loop serves both eyes, so left and right always get identical exposures. Under the
+        single-exposure modes every frame arrives labelled ``"short"``.
 
-        Whenever the AE runs it carries its own limits: the two eyes meter independently, so
-        they can disagree on the same scene. Under the single-profile modes every frame
-        arrives labelled ``"short"``, since there is nothing to tell apart.
+        What each mode aims for is in the camera's ``config/exposure.yaml``, which documents
+        every value; the reasoning is in the firmware README.
         """
         self.__logger.info(f"Sending set_auto_exposure command: mode={mode}")
         return self.__send_command(
@@ -387,19 +377,11 @@ class Stereo4DCameraHandler:
         self.__handler_status = "starting"
 
         # start the camera thread
-        if self.__start_sequence_thread is None:
-            self.__start_sequence_thread = threading.Thread(
-                target=self.__start_sequence
-            )
-            self.__start_sequence_thread.start()
-        elif not self.__start_sequence_thread.is_alive():
-            self.__start_sequence_thread = threading.Thread(
-                target=self.__start_sequence
-            )
-            self.__start_sequence_thread.start()
-        else:
+        if self.__start_sequence_thread is not None and self.__start_sequence_thread.is_alive():
             self.__logger.warn("Requested to start camera, but it is already starting.")
             return False
+        self.__start_sequence_thread = threading.Thread(target=self.__start_sequence)
+        self.__start_sequence_thread.start()
 
         # if wait is True, wait for the camera to start
         if wait:
@@ -716,13 +698,6 @@ class Stereo4DCameraHandler:
             self.__logger.error(f"Failed to decode frame: {e}")
             return None
 
-    def __decode_string(self, string_bytes):
-        try:
-            return string_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            self.__logger.error("Failed to decode string")
-            return None
-
     def __handle_frame_message(self, msg_json: Dict):
 
         self.__frame_count_total += 1
@@ -735,14 +710,11 @@ class Stereo4DCameraHandler:
         image = self.__decode_frame(image_bytes)
         if image is None:
             self.__frame_drop_count += 1
-            self.__frame_drop_percent = (
-                self.__frame_drop_count / (self.__frame_count_total + 1e-6)
-            ) * 100
-            return
-
         self.__frame_drop_percent = (
-            self.__frame_drop_count / (self.__frame_count_total + 1e-6)
-        ) * 100
+            100.0 * self.__frame_drop_count / (self.__frame_count_total + 1e-6)
+        )
+        if image is None:
+            return
 
         if self.rectify_internally and self.stereo_maps_set:
             # Decode the image into left and right images
@@ -765,12 +737,11 @@ class Stereo4DCameraHandler:
 
         self.__last_frame = frame
         self.__record_exposure_arrival(frame)
+        self.__frame_count_in_interval += 1
+        self.__frame_event.set()
 
         current_time = time.time()
         elapsed_time = current_time - self.__prev_fps_measured_time
-
-        # clear and set the frame event
-        self.__frame_event.set()
 
         if elapsed_time >= self.__fps_measurement_interval:
             self.__prev_fps_measured_time = current_time
@@ -982,13 +953,16 @@ class Stereo4DCameraHandler:
 
     def __show_stream_loop(self):
         cv2.namedWindow("Stream", cv2.WINDOW_NORMAL)
-
         while not self.__should_exit:
-            if self.__last_frame is not None:
-                img = self.__last_frame.image.copy()
-                cv2.imshow("Stream", img)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+            frame = self.__last_frame
+            if frame is None or frame.image is None:
+                # waitKey is the only thing that sleeps in this loop; without it the wait
+                # for the first frame spins a core flat.
+                time.sleep(0.01)
+                continue
+            cv2.imshow("Stream", frame.image.copy())
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
         cv2.destroyAllWindows()
 
     def __del__(self):

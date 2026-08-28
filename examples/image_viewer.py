@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-import time
-
 import cv2
 import numpy as np
 import rclpy
@@ -303,9 +301,9 @@ class ImageVisualizer(Node):
         line1 = f"Topic: {topic_name}"
         line2 = ""
         if window_name == RAW_WINDOW_NAME:
-            line2 = f"[N]Next [R]Refresh [Q]Quit"
+            line2 = "[N]Next [R]Refresh [Q]Quit"
         elif window_name == COMPRESSED_WINDOW_NAME:
-            line2 = f"[M]Next [R]Refresh [Q]Quit"
+            line2 = "[M]Next [R]Refresh [Q]Quit"
 
         cv2.putText(
             img,

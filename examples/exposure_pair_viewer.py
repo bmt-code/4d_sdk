@@ -155,7 +155,7 @@ def draw_hud(canvas, state, views, stats, rates, notice):
     ae_text = f"[n] mode {state['ae']}"
     if state["ae"] not in AE_ALTERNATING:
         ae_text += " - single stream, long pane idle"
-    # Dim for manual, the working mode; coloured for anything the AE is driving.
+    # Dim for manual; coloured whenever the camera is choosing the exposure itself.
     ae_colour = HUD_DIM if state["ae"] == "manual" else HUD_WARN
     cv2.putText(canvas, ae_text, (12, 90), font, 0.45, ae_colour, 1, cv2.LINE_AA)
 
@@ -316,9 +316,9 @@ def main():
                 handler.set_auto_exposure(state["ae"])
                 announce({
                     "manual": "manual: the two absolute targets are back, 15Hz each",
-                    "normal": "AE normal: one auto-metered stream at 30Hz",
-                    "highlight": "AE highlight: one stream, metered for the bright light",
-                    "ae_dual": "AE dual: two ISP channels, beam + room, 15Hz each",
+                    "normal": "AE normal: one stream at 30Hz, whole-frame metering",
+                    "highlight": "AE highlight: one stream at 30Hz, metered on the beam",
+                    "ae_dual": "AE dual: beam + room alternating, 15Hz each",
                 }[state["ae"]])
             elif key == ord("l"):
                 state["awb_locked"] = not state["awb_locked"]
