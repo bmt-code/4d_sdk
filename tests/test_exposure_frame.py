@@ -119,16 +119,40 @@ def test_last_frame_per_label():
 
 
 def test_exposure_fps():
+    """Both labels measured over the same window, so the two numbers can be compared.
+
+    Counting the last N arrivals of each instead spanned different stretches of time: a label
+    at 7Hz averaged over four seconds while one at 27Hz averaged over one, and the pair added
+    up to more than the camera's frame rate -- which is impossible, and was the clue that the
+    readout, not just the stream, was wrong.
+    """
+    from collections import deque
+
+    from stereo_4d.stereo_4d import EXPOSURE_FPS_WINDOW_SEC as WINDOW
+
     handler = bare_handler()
     times = getattr(handler, "_Stereo4DCameraHandler__label_arrival_times")
     now = time.time()
-    from collections import deque
-    times[EXPOSURE_SHORT] = deque([now, now + 0.1, now + 0.2, now + 0.3])
-    times[EXPOSURE_LONG] = deque([now])
+
+    # Ten shorts spread over the window, one long, plus one short older than the window.
+    times[EXPOSURE_SHORT] = deque(
+        [now - WINDOW - 1.0] + [now - WINDOW + (i + 1) * WINDOW / 11 for i in range(10)])
+    times[EXPOSURE_LONG] = deque([now - 0.05])
 
     rates = handler.get_exposure_fps()
-    check("fps: short measured over the window", round(rates[EXPOSURE_SHORT], 1), 10.0)
-    check("fps: a single sample is not a rate", rates[EXPOSURE_LONG], 0.0)
+    check("fps: counted over the window, not over its own arrivals",
+          round(rates[EXPOSURE_SHORT], 2), round(10 / WINDOW, 2))
+    check("fps: anything older than the window is gone",
+          rates[EXPOSURE_SHORT] < 11 / WINDOW, True)
+    check("fps: one arrival is still a rate, and a low one",
+          round(rates[EXPOSURE_LONG], 2), round(1 / WINDOW, 2))
+    check("fps: a stalled label reads low rather than reporting the rate it used to have",
+          rates[EXPOSURE_LONG] < rates[EXPOSURE_SHORT], True)
+
+    # The property that failed on hardware: two labels off one stream cannot together claim
+    # more than the frame rate.
+    check("fps: the two cannot sum past the frame rate",
+          rates[EXPOSURE_SHORT] + rates[EXPOSURE_LONG] <= 30.0, True)
 
 
 def test_status_carries_exposure_stats():

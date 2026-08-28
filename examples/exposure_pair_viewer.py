@@ -120,8 +120,11 @@ def draw_hud(canvas, state, views, stats, rates, notice):
     font = cv2.FONT_HERSHEY_SIMPLEX
     for row, label in enumerate((SHORT, LONG)):
         view = views[label]
-        target_us = state[f"{label}_us"]
-        target_gain = state[f"{label}_gain"]
+        # What the camera is actually aiming at, not what this viewer last asked for. In the
+        # auto modes the controllers own the targets and move them every frame, so the local
+        # numbers describe nothing -- the pane would sit at 4000us while the camera ran 8800.
+        target_us = stats.get(f"{label}_us", state[f"{label}_us"])
+        target_gain = stats.get(f"{label}_gain", state[f"{label}_gain"])
         measured_us = view.measured("exposure_time_us")
         measured_gain = view.measured("analogue_gain")
 
@@ -129,7 +132,8 @@ def draw_hud(canvas, state, views, stats, rates, notice):
         colour = HUD_FG if focused else HUD_DIM
         marker = ">" if focused else " "
         text = (
-            f"{marker} {label:<5} target {fmt(target_us,'us'):>8} g{target_gain:<4.1f} "
+            f"{marker} {label:<5} target {fmt(target_us,'us'):>8} "
+            f"g{fmt(target_gain,'',1):<5}"
             f"| measured {fmt(measured_us,'us'):>8} g{fmt(measured_gain,'',1):<5} "
             f"| {fmt(rates.get(label), 'Hz', 1):>7} "
             f"| age {fmt(view.age_ms,'ms'):>7}"
@@ -141,11 +145,16 @@ def draw_hud(canvas, state, views, stats, rates, notice):
     cadence = stats.get("cadence_percent")
     # Green while pairs are actually landing; desync is the honest read on that.
     summary_colour = HUD_OK if (out_of_sync or 0) <= 10 else HUD_WARN
+    send = stats.get("send") or {}
     summary = (
         f"unknown {fmt(unknown,'%',1)} "
         f"| desync {fmt(out_of_sync,'%',1)} "
         f"| cadence {fmt(cadence,'%',1)} "
-        f"| cam pairs S/L {stats.get('pairs_short','--')}/{stats.get('pairs_long','--')}"
+        f"| cam pairs S/L {stats.get('pairs_short','--')}/{stats.get('pairs_long','--')} "
+        # Camera pairs against frames actually sent: when these disagree the stream was lost
+        # on the wire, not at the sensor, and only the second pair of numbers says so.
+        f"| sent S/L {send.get('sent_short','--')}/{send.get('sent_long','--')} "
+        f"| dropped {send.get('dropped_zmq_again','--')}"
     )
     cv2.putText(canvas, summary, (12, 72), font, 0.5, summary_colour, 1, cv2.LINE_AA)
 

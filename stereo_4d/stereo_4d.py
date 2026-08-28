@@ -27,6 +27,18 @@ EXPOSURE_SHORT = "short"
 EXPOSURE_LONG = "long"
 EXPOSURE_UNKNOWN = "unknown"
 
+# How far back get_exposure_fps() looks. Long enough that a 15Hz label is a couple of dozen
+# samples, short enough to show a stall while it is still happening.
+EXPOSURE_FPS_WINDOW_SEC = 2.0
+
+# Arrival timestamps kept per label. Sized for the window above at a generous frame rate, so
+# the window is never truncated by the buffer.
+ARRIVAL_HISTORY = 256
+
+# Messages drained per receiver tick before yielding. High enough to catch up after a stall,
+# bounded so a flood cannot hold the thread forever.
+RECEIVE_BATCH = 16
+
 
 class Stereo4DFrame:
     def __init__(self, timestamp=None, frame_id=None, image=None, exposure=None):
@@ -222,18 +234,24 @@ class Stereo4DCameraHandler:
         return frame.copy()
 
     def get_exposure_fps(self):
-        """Measured delivery rate of each exposure, in Hz.
+        """Measured delivery rate of each exposure, in Hz, over one common window.
 
         Both exposures come off one sensor stream, so each lands at about half the camera
-        frame rate. A label sitting near zero means the camera is not producing it.
+        frame rate. A label sitting near zero means it is not reaching this client.
+
+        The window is a fixed number of seconds, the same for both labels. Counting the last
+        N arrivals of each instead made the two numbers span different stretches of time --
+        the slow label averaged over several seconds while the fast one averaged over one --
+        so they described different moments and could sum to more than the frame rate. Two
+        rates that cannot be compared are worse than no rates.
         """
+        cutoff = time.time() - EXPOSURE_FPS_WINDOW_SEC
         rates = {}
         for label, times in self.__label_arrival_times.items():
-            if len(times) < 2:
-                rates[label] = 0.0
-                continue
-            span = times[-1] - times[0]
-            rates[label] = (len(times) - 1) / span if span > 0 else 0.0
+            # Counted over the whole window, not over the gap between the first and last
+            # arrival inside it: a label that stopped halfway through has to read low, and
+            # spanning only its own arrivals would report the rate it had while it lasted.
+            rates[label] = sum(1 for t in times if t >= cutoff) / EXPOSURE_FPS_WINDOW_SEC
         return rates
 
     def get_exposure_stats(self):
@@ -705,8 +723,10 @@ class Stereo4DCameraHandler:
         # handle timestamp
         timestamp = msg_json.get("timestamp", None)
 
-        # decode image
-        image_bytes = bytes.fromhex(msg_json.get("data", ""))
+        # decode image. Newer firmware sends the JPEG as a second ZMQ frame (already bytes);
+        # older firmware hex-encoded it into this field.
+        data = msg_json.get("data", "")
+        image_bytes = data if isinstance(data, (bytes, bytearray)) else bytes.fromhex(data)
         image = self.__decode_frame(image_bytes)
         if image is None:
             self.__frame_drop_count += 1
@@ -778,7 +798,8 @@ class Stereo4DCameraHandler:
         self.__last_frame_by_label[label] = frame
         times = self.__label_arrival_times.get(label)
         if times is None:
-            times = deque(maxlen=30)
+            # Enough for the whole window even if one label carries the entire stream.
+            times = deque(maxlen=ARRIVAL_HISTORY)
             self.__label_arrival_times[label] = times
         times.append(time.time())
 
@@ -860,19 +881,35 @@ class Stereo4DCameraHandler:
             traceback.print_exc()
 
     def __receiver(self):
+        """Drain what has arrived, rather than one message per tick.
+
+        This used to take exactly one message per timer interval, so the interval was added to
+        every frame's decode: at 10ms plus ~25ms to decode a stereo JPEG the client could not
+        take 30Hz however fast the camera ran. The publisher discards what does not fit at its
+        high-water mark and says nothing, so falling behind here looked like a camera that had
+        stopped producing one of the two exposures.
+        """
         try:
             if self.sub_socket is None:
                 time.sleep(1)
                 return
 
-            # Use a small timeout to prevent blocking
-            msg_json = self.sub_socket.recv_json()
-            if msg_json and not self.__should_exit:  # Check should_exit again after receive
-                self.__handle_message(msg_json)
+            for _ in range(RECEIVE_BATCH):
+                if self.__should_exit:
+                    return
+                parts = self.sub_socket.recv_multipart()
+                if not parts:
+                    return
+                msg_json = json.loads(parts[0])
+                if len(parts) > 1:
+                    # The JPEG rides as its own ZMQ frame; hex in the JSON was twice the size.
+                    msg_json["data"] = parts[1]
+                if msg_json and not self.__should_exit:
+                    self.__handle_message(msg_json)
         except zmq.error.ContextTerminated:
             return
         except zmq.error.Again:
-            # No message available, continue
+            # Nothing left to drain.
             return
         except Exception as e:
             self.__logger.error(f"Error in receiver loop: {e}")
