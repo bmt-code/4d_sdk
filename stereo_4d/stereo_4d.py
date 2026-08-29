@@ -192,6 +192,7 @@ class Stereo4DCameraHandler:
         self.__right_camera_info_callback = None
         self.__intrinsics_callback = None
         self.__frame_callback = None
+        self.__frame_callback_copy = True
 
         # should exit flag to stop the system
         self.__should_exit = False
@@ -490,8 +491,22 @@ class Stereo4DCameraHandler:
     def set_intrinsics_callback(self, callback):
         self.__intrinsics_callback = callback
 
-    def set_frame_callback(self, callback):
+    def set_frame_callback(self, callback, copy=True):
+        """Call `callback` with each decoded frame.
+
+        Args:
+            callback: called with a Stereo4DFrame per frame, on the receiver thread.
+            copy (bool): hand the callback its own copy of the frame. True by default,
+                which is what every caller written before this argument existed expects.
+
+                Pass False only if the callback will not write into `frame.image`. The
+                frame is freshly built for this call and the SDK does not touch it again,
+                but the same array is what `get_last_frame()` hands out, so a callback that
+                draws on it corrupts what every other consumer sees. Skipping the copy is
+                worth about 1 ms and 12 MB per frame at 1080p stereo.
+        """
         self.__frame_callback = callback
+        self.__frame_callback_copy = bool(copy)
 
     def __ping(self, host):
         param = "-n" if platform.system().lower() == "windows" else "-c"
@@ -769,7 +784,7 @@ class Stereo4DCameraHandler:
             self.__frame_count_in_interval = 0
 
         if self.__frame_callback:
-            self.__frame_callback(frame.copy())
+            self.__frame_callback(frame.copy() if self.__frame_callback_copy else frame)
 
     @staticmethod
     def __parse_exposure(msg_json: Dict):
