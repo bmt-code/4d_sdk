@@ -55,6 +55,9 @@ HUD_FG = (235, 235, 235)
 HUD_DIM = (150, 150, 150)
 HUD_WARN = (60, 190, 250)
 HUD_OK = (120, 220, 140)
+# Fills the half of the canvas that has no second exposure behind it. Lighter than the HUD so
+# it reads as deliberate empty space rather than a dead pane.
+BAR_BG = (58, 58, 58)
 
 
 class StreamView:
@@ -113,12 +116,40 @@ def fmt(value, suffix="", digits=0):
     return f"{int(round(value))}{suffix}"
 
 
-def draw_hud(canvas, state, views, stats, rates, notice):
+def is_dual(state, stats):
+    """Does the running mode deliver two exposures?
+
+    Taken from the camera when it says, not from what this viewer last asked for -- the two
+    disagree for the moment either side of a switch, which is exactly when it matters.
+    """
+    return stats.get("ae_mode", state["ae"]) in AE_ALTERNATING
+
+
+def render_body(canvas, views, dual, pane_width, pane_h):
+    """The image area: two panes, or one centred between grey bars.
+
+    A single-exposure mode never fills the long pane, and drawing it anyway showed whatever
+    that pane last held -- a frame from a mode that is no longer running. Grey says "there is
+    nothing here" without pretending otherwise.
+    """
+    body = canvas[HUD_HEIGHT:]
+    if dual:
+        body[:, :pane_width] = pane(views[SHORT], pane_width, pane_h)
+        body[:, pane_width:] = pane(views[LONG], pane_width, pane_h)
+        return
+    body[:] = BAR_BG
+    left = (body.shape[1] - pane_width) // 2
+    body[:, left:left + pane_width] = pane(views[SHORT], pane_width, pane_h)
+
+
+def draw_hud(canvas, state, views, stats, rates, notice, dual=True):
     height, width = canvas.shape[:2]
     cv2.rectangle(canvas, (0, 0), (width, HUD_HEIGHT), HUD_BG, -1)
 
     font = cv2.FONT_HERSHEY_SIMPLEX
-    for row, label in enumerate((SHORT, LONG)):
+    # One exposure means one row. A second row would report a target nothing is aiming at and
+    # an age that only grows.
+    for row, label in enumerate((SHORT, LONG) if dual else (SHORT,)):
         view = views[label]
         # What the camera is actually aiming at, not what this viewer last asked for. In the
         # auto modes the controllers own the targets and move them every frame, so the local
@@ -279,12 +310,12 @@ def main():
             rates = handler.get_exposure_fps()
 
             canvas = np.zeros((pane_h + HUD_HEIGHT, args.pane_width * 2, 3), dtype=np.uint8)
-            canvas[HUD_HEIGHT:, : args.pane_width] = pane(views[SHORT], args.pane_width, pane_h)
-            canvas[HUD_HEIGHT:, args.pane_width:] = pane(views[LONG], args.pane_width, pane_h)
+            dual = is_dual(state, stats)
+            render_body(canvas, views, dual, args.pane_width, pane_h)
 
             if notice and time.time() > notice_until:
                 notice = ""
-            draw_hud(canvas, state, views, stats, rates, notice)
+            draw_hud(canvas, state, views, stats, rates, notice, dual)
             cv2.imshow(window, canvas)
 
             key = cv2.waitKey(20) & 0xFF
