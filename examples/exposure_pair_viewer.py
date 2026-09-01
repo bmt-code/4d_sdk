@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Interactive dual-exposure test for the 4D Stereo Camera.
 
-The camera interleaves two exposures on one stream: a short one metered for the bright light
-(a surgical beam) and a long one metered for the rest of the room. Every frame carries the
-label of the exposure it was taken with, plus the exposure the sensor actually used.
-
-This viewer shows the newest frame of each exposure side by side and lets you retune both
-while watching the scene. Nothing here ever restarts the stream: every change lands on the
-next frame.
+Camera interleaves two exposures on one stream: short metered for the bright light (surgical
+beam), long for the room. Each frame carries its exposure label plus what the sensor used.
+Viewer shows newest frame of each side by side and retunes both live. No change restarts the
+stream -- everything lands on the next frame.
 
     python3 examples/exposure_pair_viewer.py --ip 172.31.1.77
 
@@ -117,21 +114,14 @@ def fmt(value, suffix="", digits=0):
 
 
 def is_dual(state, stats):
-    """Does the running mode deliver two exposures?
-
-    Taken from the camera when it says, not from what this viewer last asked for -- the two
-    disagree for the moment either side of a switch, which is exactly when it matters.
-    """
+    """Does the running mode deliver two exposures? Asks the camera, not what this viewer
+    last requested -- the two disagree either side of a switch, which is when it matters."""
     return stats.get("ae_mode", state["ae"]) in AE_ALTERNATING
 
 
 def render_body(canvas, views, dual, pane_width, pane_h):
-    """The image area: two panes, or one centred between grey bars.
-
-    A single-exposure mode never fills the long pane, and drawing it anyway showed whatever
-    that pane last held -- a frame from a mode that is no longer running. Grey says "there is
-    nothing here" without pretending otherwise.
-    """
+    """Image area: two panes, or one centred between grey bars. Single-exposure modes never
+    fill the long pane; drawing it anyway showed a stale frame from a dead mode. Grey = empty."""
     body = canvas[HUD_HEIGHT:]
     if dual:
         body[:, :pane_width] = pane(views[SHORT], pane_width, pane_h)

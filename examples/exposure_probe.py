@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
-"""Check a camera's exposure stream from the command line, with no display.
-
-The viewer needs a screen, which a unit in a rack does not have and a CI job never will. This
-asks the same questions and prints numbers you can paste into a report:
+"""Check a camera's exposure stream from the CLI, no display (racked units, CI have no screen).
+Same questions as the viewer, printable numbers:
 
     python3 examples/exposure_probe.py --ip 172.31.1.77 --mode ae_dual --seconds 60
 
-What to look at, in the order it matters:
+Read in this order:
 
-  short/long Hz     both near half the frame rate in a dual mode, one at the full rate in a
-                    single one. Lopsided means frames are being lost between the pairing and
-                    this client, not that the camera stopped producing an exposure.
-  mislabelled       every frame's label against the exposure inside that same frame. Anything
-                    but zero is a swapped pane.
-  camera pairs      what the camera paired, against what actually left it. A gap between the
-  vs sent           two is the wire; no gap and a lopsided rate is this client.
-  dropped q/zmq     where the gap went. zmq is the publisher discarding at its high-water
-                    mark, which was silent and uncounted before.
-  desync            the two eyes landing on different moments. Under 1% is healthy.
-  cadence           whether frames come back wearing the exposure the cadence asked for. Near
-                    zero means timing.control_lag_frames is aimed at the wrong frame; the
-                    camera logs which value to try.
-  frame period      what the sensor runs against what the cadence assumes.
+  short/long Hz     both near half frame rate in dual, one at full rate in single. Lopsided =
+                    frames lost between pairing and this client, not camera stopping.
+  mislabelled       frame label vs exposure inside that frame. Non-zero = swapped pane.
+  camera pairs      what camera paired vs what left it. Gap = the wire; no gap plus lopsided
+  vs sent           rate = this client.
+  dropped q/zmq     where the gap went. zmq = publisher discarding at its high-water mark.
+  desync            eyes on different moments. Under 1% healthy.
+  cadence           do frames wear the exposure the cadence asked for. Near zero means
+                    timing.control_lag_frames aims at the wrong frame; camera logs what to try.
+  frame period      sensor rate vs what the cadence assumes.
 """
 import argparse
 import collections
@@ -79,12 +73,9 @@ def main():
 
 
 def _is_mislabelled(handler, frame, mode):
-    """Does this frame's label match the exposure reported in the same frame?
-
-    Only asked in the dual modes. A single exposure is reported as "short" whatever it is, so
-    comparing it against a split between two targets says nothing -- an earlier version of
-    this script called every frame in `normal` mismatched for exactly that reason.
-    """
+    """Frame label vs exposure reported in the same frame. Dual modes only: a single exposure
+    reports as "short" whatever it is, so splitting it against two targets says nothing (an
+    older version called every `normal` frame mismatched for that reason)."""
     if mode not in DUAL_MODES:
         return 0
     exposure_us = frame.exposure_time_us

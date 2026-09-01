@@ -32,11 +32,8 @@ def check(name, got, want):
 
 
 def bare_handler():
-    """A handler with only the exposure bookkeeping set up.
-
-    Constructing one for real opens sockets and starts threads; none of that is involved in
-    what these tests cover.
-    """
+    """Handler with only the exposure bookkeeping. Constructing one for real opens sockets
+    and starts threads, none of which these tests touch."""
     handler = object.__new__(Stereo4DCameraHandler)
     prefix = "_Stereo4DCameraHandler__"
     setattr(handler, prefix + "last_frame", None)
@@ -119,13 +116,10 @@ def test_last_frame_per_label():
 
 
 def test_exposure_fps():
-    """Both labels measured over the same window, so the two numbers can be compared.
-
-    Counting the last N arrivals of each instead spanned different stretches of time: a label
-    at 7Hz averaged over four seconds while one at 27Hz averaged over one, and the pair added
-    up to more than the camera's frame rate -- which is impossible, and was the clue that the
-    readout, not just the stream, was wrong.
-    """
+    """Both labels measured over the same window, so the numbers compare.
+    Last-N-arrivals per label spanned different stretches: 7Hz averaged over four seconds vs
+    27Hz over one, summing above the frame rate -- impossible, and the clue the readout was
+    wrong, not just the stream."""
     from collections import deque
 
     from stereo_4d.stereo_4d import EXPOSURE_FPS_WINDOW_SEC as WINDOW
@@ -194,10 +188,8 @@ def frame_handler():
 
 def test_fps_is_actually_counted():
     """get_fps() returned None forever: the interval counter was read and reset, never
-    incremented, so every measurement divided zero by the elapsed time.
-
-    Visible in examples/stereo_4d_ros2.py, which publishes "FPS: None".
-    """
+    incremented, so every measurement divided zero by elapsed time.
+    Visible in examples/stereo_4d_ros2.py, which publishes "FPS: None"."""
     handler = frame_handler()
     prefix = "_Stereo4DCameraHandler__"
     handle = getattr(handler, prefix + "handle_frame_message")

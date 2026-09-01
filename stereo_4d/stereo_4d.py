@@ -45,14 +45,10 @@ class Stereo4DFrame:
         self.timestamp = timestamp
         self.frame_id = frame_id
         self.image = image
-        # Which of the two exposures this frame is, and what the sensor actually used to
-        # take it:
+        # Which exposure this frame is + what the sensor used:
         #   {"label": "short"|"long"|"unknown",
-        #    "left":  {"exposure_time_us", "analogue_gain"},
-        #    "right": {...},
-        #    "lux": ...}
-        # The camera reports what it measured, never what was requested, so a frame caught
-        # while an exposure change was still landing is labelled "unknown" instead of guessed.
+        #    "left": {"exposure_time_us", "analogue_gain"}, "right": {...}, "lux": ...}
+        # Camera reports measured, never requested; frame caught mid-change = "unknown".
         self.exposure = exposure if exposure is not None else {}
 
     @property
@@ -218,12 +214,7 @@ class Stereo4DCameraHandler:
         return self.__received_fps
 
     def get_last_frame(self, exposure=None):
-        """Get the last received frame.
-
-        Args:
-            exposure (str, optional): "short" or "long" to get the newest frame of that
-                exposure. None (default) returns the newest frame of either.
-        """
+        """Newest received frame. exposure="short"|"long" picks that label, None = either."""
         if exposure is None:
             if self.__last_frame is None:
                 return None
@@ -235,16 +226,12 @@ class Stereo4DCameraHandler:
         return frame.copy()
 
     def get_exposure_fps(self):
-        """Measured delivery rate of each exposure, in Hz, over one common window.
+        """Measured delivery rate of each exposure in Hz, over one common window.
 
-        Both exposures come off one sensor stream, so each lands at about half the camera
-        frame rate. A label sitting near zero means it is not reaching this client.
-
-        The window is a fixed number of seconds, the same for both labels. Counting the last
-        N arrivals of each instead made the two numbers span different stretches of time --
-        the slow label averaged over several seconds while the fast one averaged over one --
-        so they described different moments and could sum to more than the frame rate. Two
-        rates that cannot be compared are worse than no rates.
+        Both exposures share one sensor stream, so each lands near half the frame rate. A label
+        near zero is not reaching this client. Window is a fixed number of seconds, same for
+        both labels: counting the last N arrivals per label spanned different stretches of time
+        and the two rates could sum above the frame rate, so they were not comparable.
         """
         cutoff = time.time() - EXPOSURE_FPS_WINDOW_SEC
         rates = {}
@@ -256,33 +243,30 @@ class Stereo4DCameraHandler:
         return rates
 
     def get_exposure_stats(self):
-        """Exposure telemetry from the camera, refreshed with every 1Hz status message.
+        """Exposure telemetry from the camera, refreshed on every 1Hz status message.
 
         Always present:
 
-            ``ae_mode``            the mode in force: manual / normal / highlight / ae_dual
-            ``short_us``           the manual targets and gains, kept whatever mode runs
-            ``long_us``            (so ``set_auto_exposure("manual")`` resumes them)
+            ``ae_mode``            mode in force: manual / normal / highlight / ae_dual
+            ``short_us``           manual targets and gains, kept whatever mode runs, so
+            ``long_us``            ``set_auto_exposure("manual")`` resumes them
             ``short_gain``
             ``long_gain``
-            ``measured``           per label, what the sensor actually settled on
-            ``unknown_percent``    frames that could not be labelled, so were dropped
-            ``out_of_sync_percent``  pairs dropped for the eyes being too far apart in time
+            ``measured``           per label, what the sensor settled on
+            ``unknown_percent``    unlabelled frames, dropped
+            ``out_of_sync_percent``  pairs dropped, eyes too far apart in time
 
-        Mode-specific, and meaningless outside it:
+        Mode-specific, meaningless outside it:
 
-            ``cadence_percent``    the two dual-exposure modes -- how often a frame came
-                                   back wearing the exposure the cadence asked for. Low
-                                   means the control is landing on the wrong frame.
-            ``ae``                 the auto modes -- per label, what its controller last
-                                   metered: ``brightness``, ``setpoint``, ``clipped`` and
-                                   ``rail`` (None / "floor" / "ceiling"). Empty under
-                                   ``manual``.
-            ``ae_railed``          the auto modes -- a controller is asking for more light
-                                   than its band can give. In a dark theatre this means the
-                                   frame rate is the limit: lower the fps and the long
-                                   exposure gets more room. Ceiling rails only; a floor rail
-                                   is a bright scene and is not reported here.
+            ``cadence_percent``    dual modes -- how often a frame came back wearing the
+                                   exposure the cadence asked for. Low = control lands on the
+                                   wrong frame.
+            ``ae``                 auto modes -- per label: ``brightness``, ``setpoint``,
+                                   ``clipped``, ``rail`` (None / "floor" / "ceiling").
+                                   Empty under ``manual``.
+            ``ae_railed``          auto modes -- controller wants more light than its band
+                                   gives. Dark theatre: fps is the limit, lower it for long
+                                   exposure room. Ceiling rails only; floor rail unreported.
         """
         return dict(self.__exposure_stats)
 
@@ -320,23 +304,19 @@ class Stereo4DCameraHandler:
                           long_gain=None):
         """Set the two exposure targets the camera alternates between.
 
-        Absolute microseconds, pushed straight at the sensor with the AE off. Every change
-        lands on the next frame -- nothing here rebuilds the camera.
-
-        The camera starts with its AE running, so **this is also what turns dual exposure on**.
-        Sending it once is enough; the camera stays in dual for as long as this connection
-        lasts, and returns to auto when the connection ends. A client that never calls this
-        gets the single auto-metered stream the camera has always produced.
+        Absolute microseconds, pushed at the sensor with AE off. Changes land on the next
+        frame, nothing rebuilds the camera. Camera boots with AE running, so **this also turns
+        dual exposure on**: send once, dual holds for the life of the connection and reverts to
+        auto when it ends. A client that never calls this gets the single auto-metered stream.
 
         Args:
-            short_us (int): short exposure target in microseconds, for the bright light
-                (the surgical beam).
-            long_us (int): long exposure target in microseconds, for the rest of the room.
-            short_gain (float): analogue gain for the short exposure.
-            long_gain (float): analogue gain for the long exposure.
+            short_us (int): short target in us, for the bright light (surgical beam).
+            long_us (int): long target in us, for the rest of the room.
+            short_gain (float): analogue gain, short exposure.
+            long_gain (float): analogue gain, long exposure.
 
-        Both targets are clamped below the camera's frame period, so at 30 fps neither can
-        exceed 31333us. Setting short_us equal to long_us asks for a single exposure.
+        Both targets clamp below the frame period -- at 30 fps neither exceeds 31333us.
+        short_us == long_us asks for a single exposure.
         """
         payload = {"action": "set_exposure_pair"}
         for key, value in (
@@ -351,27 +331,23 @@ class Stereo4DCameraHandler:
     def set_auto_exposure(self, mode="normal"):
         """Pick the exposure mode. Every switch lands on the next frame.
 
-        None of the four rebuilds the camera. The sensor is driven identically in all of
-        them -- the AE inside the ISP is never used -- so a mode only changes who writes the
-        two targets. ``ae_dual`` used to cost a ~1.5s teardown because it ran on the ISP's
-        HDR, and HdrMode is a configure-time control; that is gone.
+        No mode rebuilds the camera. Sensor is driven identically in all four -- the ISP's AE
+        is never used -- so a mode only changes who writes the two targets. (``ae_dual`` once
+        cost a ~1.5s teardown via the ISP's HDR, a configure-time control; gone.)
 
         Args:
             mode (str): one of
 
-                ``"manual"``     the pair from :meth:`set_exposure_pair`, alternating,
-                                 15Hz each. Nothing adapts.
-                ``"normal"``     one exposure, whole-frame metering. 30Hz. The default.
-                ``"highlight"``  one exposure, metering the beam. 30Hz.
-                ``"ae_dual"``    both, alternating, 15Hz each -- short metered like
-                                 highlight, long like normal.
+                ``"manual"``     pair from :meth:`set_exposure_pair`, alternating, 15Hz each.
+                ``"normal"``     one exposure, whole-frame metering, 30Hz. Default.
+                ``"highlight"``  one exposure, metering the beam, 30Hz.
+                ``"ae_dual"``    both alternating, 15Hz each -- short like highlight, long
+                                 like normal.
 
-        The three auto modes run a control loop on the camera, not the ISP's AGC, and one
-        loop serves both eyes, so left and right always get identical exposures. Under the
-        single-exposure modes every frame arrives labelled ``"short"``.
-
-        What each mode aims for is in the camera's ``config/exposure.yaml``, which documents
-        every value; the reasoning is in the firmware README.
+        The three auto modes run a control loop on the camera, not the ISP's AGC, one loop for
+        both eyes, so left and right always match. Single-exposure modes label every frame
+        ``"short"``. Targets live in the camera's ``config/exposure.yaml``; why is in the
+        firmware README.
         """
         self.__logger.info(f"Sending set_auto_exposure command: mode={mode}")
         return self.__send_command(
@@ -379,11 +355,9 @@ class Stereo4DCameraHandler:
         )
 
     def set_awb_gains(self, gains):
-        """Pin the white balance to (red, blue) gains, or pass None to let AWB run.
-
-        Worth pinning with two exposures: AWB is a single loop across both, so it hunts
-        between the beam-lit and room-lit frames and neither gets the right gains.
-        """
+        """Pin white balance to (red, blue) gains, None lets AWB run. Worth pinning with two
+        exposures: AWB is one loop across both, so it hunts between beam-lit and room-lit
+        frames and neither gets the right gains."""
         self.__logger.info(f"Sending set_awb command: gains={gains}")
         return self.__send_command(
             {"action": "set_awb", "gains": list(gains) if gains else None}, "awb command"
@@ -496,14 +470,11 @@ class Stereo4DCameraHandler:
 
         Args:
             callback: called with a Stereo4DFrame per frame, on the receiver thread.
-            copy (bool): hand the callback its own copy of the frame. True by default,
-                which is what every caller written before this argument existed expects.
-
-                Pass False only if the callback will not write into `frame.image`. The
-                frame is freshly built for this call and the SDK does not touch it again,
-                but the same array is what `get_last_frame()` hands out, so a callback that
-                draws on it corrupts what every other consumer sees. Skipping the copy is
-                worth about 1 ms and 12 MB per frame at 1080p stereo.
+            copy (bool): give the callback its own copy. True by default (what callers written
+                before this argument expect). False only if the callback never writes into
+                `frame.image`: the same array backs `get_last_frame()`, so drawing on it
+                corrupts every other consumer. Skipping the copy saves ~1 ms and 12 MB per
+                frame at 1080p stereo.
         """
         self.__frame_callback = callback
         self.__frame_callback_copy = bool(copy)
@@ -896,13 +867,12 @@ class Stereo4DCameraHandler:
             traceback.print_exc()
 
     def __receiver(self):
-        """Drain what has arrived, rather than one message per tick.
+        """Drain what has arrived, not one message per tick.
 
-        This used to take exactly one message per timer interval, so the interval was added to
-        every frame's decode: at 10ms plus ~25ms to decode a stereo JPEG the client could not
-        take 30Hz however fast the camera ran. The publisher discards what does not fit at its
-        high-water mark and says nothing, so falling behind here looked like a camera that had
-        stopped producing one of the two exposures.
+        One message per timer interval added that interval to every frame's decode: 10ms plus
+        ~25ms for a stereo JPEG capped the client below 30Hz whatever the camera did. The
+        publisher discards silently at its high-water mark, so falling behind here looked like
+        the camera had stopped producing one exposure.
         """
         try:
             if self.sub_socket is None:
