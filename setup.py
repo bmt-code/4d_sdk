@@ -9,5 +9,7 @@ setuptools.setup(
         "opencv-python",
         "numpy",
         "zmq",
+        "PyYAML",
+        "tqdm",
     ],
 )

@@ -177,3 +177,6 @@ cython_debug/
 *.jpeg
 *.jpg
 .vscode
+
+# Calibration runs
+calibration/sessions/

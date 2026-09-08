@@ -53,6 +53,8 @@ except KeyboardInterrupt:
 | `examples/image_viewer.py` | Interactive stereo topic viewer | Camera + ROS2 |
 | `examples/stereo_4d_ros2.py` | Full ROS2 driver publishing stereo images | Camera + ROS2 |
 | `examples/exposure_pair_viewer.py` | Interactive dual-exposure tuner: both exposures side by side, retuned live | Camera |
+| `examples/check_calibration.py` | Checks a live calibration against a checkerboard | Camera |
+| `calibration/calibrate.py` | All-in-one calibration: capture, filter, solve, check | Camera (or a folder) |
 
 Run any example with:
 
@@ -155,13 +157,23 @@ python3 tests/test_exposure_frame.py   # no camera needed
 
 ## Calibration
 
-Calibration tools are in `calib/`. See [`calib/how-to-calib.md`](calib/how-to-calib.md) for a step-by-step guide using ROS2's `camera_calibration` package.
+One command does the whole thing -- capture, drop the blurry images, calibrate, and
+check the result on a live rectified stream with epipolar lines:
 
 ```bash
-# Example: run stereo calibration with ROS2
-ros2 run camera_calibration cameracalibrator --no-service-check --approximate 0.1 \
-  --size 8x6 --square 0.03 \
-  right:=stereo_4d/right_raw/image left:=stereo_4d/left_raw/image \
-  right_camera:=stereo_4d/right_raw left_camera:=stereo_4d/left_raw \
-  --fix-principal-point
+python3 calibration/calibrate.py
+
+# or from images you already have
+python3 calibration/calibrate.py --images examples/images_stereo_4d --grid 9x6 --square 25
 ```
+
+Every run writes to `calibration/sessions/<name>_<timestamp>/` -- the calibration, a
+report with per-image reprojection errors, and symlinks to whatever was rejected and
+why. See [`calibration/README.md`](calibration/README.md).
+
+The last prompts offer to copy the result into the local `4d_firmware/calib/` and to
+rsync it straight onto the camera at
+`bmt@172.31.1.77:~/4d_firmware/calib/stereo_calibration.yaml`.
+
+`calibration/reference_calibration.yaml` is the last known-good calibration for this rig
+(fx 2284, baseline 293.4 mm), kept as a sanity check on new results.
