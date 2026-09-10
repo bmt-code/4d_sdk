@@ -315,8 +315,9 @@ def parse_args():
     source.add_argument("--images", metavar="DIR",
                         help="calibrate from a past session directory or any folder "
                              "of side-by-side PNGs")
-    source.add_argument("--interval", type=float, default=2.0,
-                        help="seconds between automatic shots while capturing")
+    source.add_argument("--shots", type=int, default=100,
+                        help="frames to collect while capturing; the guided targets are "
+                             "sized to reach this total")
 
     quality = parser.add_argument_group("quality filter")
     quality.add_argument("--no-blur-filter", dest="blur_filter", action="store_false",
@@ -334,8 +335,10 @@ def parse_args():
     fit = parser.add_argument_group("calibration")
     fit.add_argument("--grid", help="inner corners as 'cols x rows', e.g. 9x6")
     fit.add_argument("--square", help="checkerboard square size in mm")
-    fit.add_argument("--rational", action="store_true",
-                     help="use the 14-coefficient rational distortion model")
+    fit.add_argument("--rational", dest="rational", action="store_true", default=True,
+                     help="use the 14-coefficient rational distortion model (default)")
+    fit.add_argument("--no-rational", dest="rational", action="store_false",
+                     help="use the plain 5-coefficient distortion model")
     fit.add_argument("--no-prune", dest="prune", action="store_false",
                      help="keep image pairs with a high reprojection error")
     fit.add_argument("--max-reproj", type=float, default=1.5,
@@ -352,7 +355,7 @@ def parse_args():
                        help="review the saved images instead of a live stream")
     check.add_argument("--line-spacing", type=int, default=20,
                        help="displayed pixels between epipolar lines")
-    check.add_argument("--preview-width", type=int, default=1600,
+    check.add_argument("--preview-width", type=int, default=1920,
                        help="width the capture and check windows render at")
     check.add_argument("--no-check", dest="check", action="store_false",
                        help="skip the verification stage")
@@ -390,9 +393,9 @@ def main():
     if choice == "c":
         grid, square_mm = resolve_board(args)
         images_dir = os.path.join(session, "images")
-        paths = capture_images(images_dir, ip=args.ip, interval=args.interval,
-                               grid=grid, timeout=60.0,
-                               preview_width=args.preview_width)
+        paths = capture_images(images_dir, ip=args.ip, grid=grid, timeout=60.0,
+                               preview_width=args.preview_width, square_mm=square_mm,
+                               total_shots=args.shots)
         source = images_dir
     else:
         source = choose_source(args)

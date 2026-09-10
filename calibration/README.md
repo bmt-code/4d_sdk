@@ -52,50 +52,65 @@ session also picks up the board settings it recorded, so those prompts default c
 
 ## Capturing
 
-The capture window behaves like `examples/image_saver.py`: a shot every couple of
-seconds with a white flash for the shutter. On top of that it tells you whether the
-board is currently visible in each eye, so you can see your coverage as you move it.
+The window draws **the board itself** at the pose it wants -- the wanted pose projected
+through a nominal camera, rendered as the board's own grid. Match the shape and the tool
+shoots by itself. The outline is **red when you are far off, amber as you close, green when
+it is right**, so you steer by the colour instead of reading numbers.
+
+The view is **mirrored**: you stand in front of the camera looking at the screen, and an
+unmirrored view sends you the wrong way every time.
 
 | Key | |
 |---|---|
-| `SPACE` | shoot now |
+| `SPACE` | shoot now, whatever the guide says |
+| `s` | skip this pose |
+| `x` | skip all three poses at this spot |
 | `q` / `Esc` | done capturing, carry on to the next stage |
 
-The coverage map in the top right of each eye fills a cell in once a saved board has
-put corners in it, so you can see which parts of the image still need visiting — the
-corners above all.
+### One measure, not three
 
-Both windows raise themselves to the front when the first frame lands, so the preview is
-not buried behind the terminal that started it — they are raised, not pinned, so they
-behave normally once up.
+Position, distance and tilt are all in the guide already, so there is **one** gate: how far
+the detected corners sit from the guide's, as a fraction of the guide's width. Separate
+gates for size and tilt were computed alongside the guide rather than from it, and
+disagreed with the picture on screen by up to 15% -- refusing the very pose being drawn.
 
-Both render at `--preview-width` (1600 px) rather than the sensor's 3840, and the
-live board indicator runs on a half-size copy with `CALIB_CB_FAST_CHECK` only. The full
-search costs ~300 ms an eye when there is nothing to find — most frames, while you are
-carrying the board around — which is enough to make the window feel stuck. The half-size
-pass costs about 6 ms and, measured over a full session, misses none of the boards the
-full search finds.
+It is the **worst** corner distance, not the mean, and that matters. Yaw moves the board's
+edges while the middle stays put, so a mean dilutes exactly the difference the three poses
+are made of: measured as a mean, a square-on board scores no better against a turned guide
+than a well-matched board does, and the poses collapse into each other. Taken as the worst
+corner the gap is threefold.
 
-### The capture protocol
+Two gates remain that the guide cannot express: the board must be **still** (the eyes are
+not exposed together, so a moving board lands in two different places and the pruner drops
+the pair later), and it must be **sharp**. Both only apply once the pose is matched --
+before that you are still moving on purpose, which is why the hold-still bar only appears
+once the outline turns green.
 
-Determined empirically on this rig. Two distinct kinds of frame, and they do different
-jobs:
+### The ladder
 
-**1. Close-ups, one eye at a time.** Two frames with the board held very close: one
-against the left of the field, one against the right. The board does **not** need to be
-in both eyes — at that range it cannot be. These fit each eye's focal length and its
-distortion out at the image corners, which is the part a stereo-only set leaves
-unconstrained. Skipping them is what puts fx 10% out.
+Every position is worked three ways: square on, then turned so the left edge comes towards
+the camera, then the right. Turn on the spot; you do not walk between the three.
 
-**2. Both eyes, corners covered, several distances.** Work the board through the corners
-and edges of the frame with both eyes seeing it, repeating at a few distances. **Do not
-go past about 1800 mm** — beyond that the board is too small in frame to add anything.
-These are the only frames that fit the geometry between the eyes.
+| Band | Board fills | Roughly | Positions per eye | Frames |
+|---|---|---|---|---|
+| very close | 70% of the frame | 0.34 m | 1 | 6 |
+| close | 55% | 0.43 m | 2x2 | 24 |
+| mid | 38% | 0.63 m | 3x3 | 54 |
+| far | 25% | 0.95 m | 2x2 | 24 |
+| | | | | **108** |
 
-**Hold the board still for each shot.** The two eyes are not exposed at the same instant,
-so a board in motion lands in different places in the left and right image. Such a frame
-looks perfect in each eye alone and is wrong as a pair — see the note on stereo error
-below. Raise `--interval` if two seconds does not give you time to settle.
+It starts almost filling the frame and works out. The first band is one position, and that
+single frame is what pins the distortion at the very edge of the field -- nothing further
+away replaces it. A band is named by how much of the frame the board spans rather than by a
+distance, because that is what you can see; the metres fall out of the focal length.
+
+The guides are drawn with the reference lens distortion, not through a pinhole. Without it
+a real board at the far band misses a pinhole guide by more than the whole tolerance.
+
+Both windows render at `--preview-width` (1920, so 1920x540 for the 3840x1080 stereo frame),
+and the live board search runs on a half-size copy with `CALIB_CB_FAST_CHECK` only: the full
+search costs ~300 ms an eye when there is nothing to find, which is most frames while the
+board is being carried around, and is what makes the window feel stuck.
 
 ## Filtering
 
@@ -188,7 +203,7 @@ quietly.
 
 --capture               capture instead of asking
 --images DIR            calibrate from an existing folder
---interval 2.0          seconds between automatic shots
+--shots 100             frames to collect; the guides are sized to reach this
 
 --no-blur-filter        keep the soft images
 --blur-ratio 0.6        drop below this fraction of the median sharpness
@@ -199,14 +214,14 @@ quietly.
 --max-mono-reproj 1.0   per-eye pruning threshold in pixels
 --grid 9x6              inner corners, columns x rows
 --square 25             square size in millimetres
---rational              14-coefficient distortion model (see below)
+--no-rational           plain 5-coefficient distortion model (see below)
 --no-prune              keep the high-error pairs
 --max-reproj 1.5        stereo pruning threshold in pixels
 --workers N             detection threads
 
 --offline               review saved images instead of a live stream
 --line-spacing 20       displayed pixels between epipolar lines
---preview-width 1600    width the capture and check windows render at
+--preview-width 1920    width the capture and check windows render at
 --no-check              skip the check entirely
 
 --install / --no-install    decide the 4d_firmware copy without being asked
@@ -215,14 +230,39 @@ quietly.
 -y, --yes                   take every default, no prompts
 ```
 
-### On `--rational`
+### On the distortion model
 
-The default is the plain five-coefficient distortion model. The rational model buys a
-slightly lower RMS by fitting fourteen coefficients that come out degenerate — k1 in the
-tens, k2 in the hundreds — which is what produced
-an earlier calibration of this rig. The firmware feeds `distL` straight into
-`cv2.initUndistortRectifyMap`, which takes either length, so use the rational model only
-if you have a reason to.
+The default is the **rational** model: eight coefficients — six radial
+(k1 k2 k3 k4 k5 k6) and two tangential (p1 p2) — chosen on this rig's own early tests,
+where it measured more accurate than the plain five. Being a ratio of two radial
+polynomials rather than one, its coefficients are not comparable to the plain model's
+term by term; the numerator and denominator terms only mean anything together.
+
+The vector in the YAML is fourteen long, not eight: OpenCV always returns the thin-prism
+(s1..s4) and tilted-sensor (taux, tauy) slots, and they stay zero unless
+`CALIB_THIN_PRISM_MODEL` / `CALIB_TILTED_MODEL` are asked for, which this pipeline never
+does. The six zeros change nothing — `initUndistortRectifyMap` produces identical maps
+with or without them.
+
+`--no-rational` falls back to the five-coefficient model. The firmware feeds `distL`
+straight into `cv2.initUndistortRectifyMap`, which takes either length, so both deploy
+the same way.
+
+## Tests
+
+`python3 tests/test_calibration_synthetic.py` checks the pipeline against a rig it
+invents: known intrinsics, distortion and extrinsics, a checkerboard projected into both
+eyes from poses that follow the capture protocol above, sub-pixel noise on the corners,
+and then the real solve. It asserts the recovered focal length, principal point, baseline
+and rotation against the truth, that the fitted lens model agrees with the real one out at
+the image corners, that triangulated boards measure correctly in millimetres, that the
+pruner takes a moved board out of the extrinsics while keeping its intrinsics, and that
+the saved YAML is what the firmware reads.
+
+It also measures the reason the close-ups exist: with them the fitted lens agrees with the
+truth to about 1 px across the frame, without them about 15 px.
+
+No camera and no images needed; about nine seconds.
 
 ## Files
 

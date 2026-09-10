@@ -60,16 +60,18 @@ def calibrate_eye(objpoints, imgpoints, image_shape, flags):
 def stereo_calibrate(objpoints, imgpoints_left, imgpoints_right,
                      mtxL, distL, mtxR, distR, image_shape, flags):
     """The geometry between the eyes, with the intrinsics held fixed."""
-    rms, mtxL, distL, mtxR, distR, R, T, E, F = cv2.stereoCalibrate(
+    rms, mtxL, distL, mtxR, distR, R, T, _E, _F = cv2.stereoCalibrate(
         objpoints, imgpoints_left, imgpoints_right,
         mtxL, distL, mtxR, distR, image_shape[:2][::-1],
         criteria=CALIB_CRITERIA, flags=flags,
     )
-    return rms, mtxL, distL, mtxR, distR, R, T, E, F
+    # E and F are dropped: nothing downstream reads them. The firmware rebuilds
+    # rectification from mtx/dist/R/T alone.
+    return rms, mtxL, distL, mtxR, distR, R, T
 
 
-def save_calibration(path, mtxL, distL, mtxR, distR, R, T, E, F, precision=12):
-    """Write the eight keys the firmware and the SDK read.
+def save_calibration(path, mtxL, distL, mtxR, distR, R, T, precision=12):
+    """Write the six keys the firmware and the SDK read.
 
     Distortion is flattened to one row to match the shape the ROS-derived calibrations
     use; the firmware feeds it straight to initUndistortRectifyMap, which takes either.
@@ -81,8 +83,6 @@ def save_calibration(path, mtxL, distL, mtxR, distR, R, T, E, F, precision=12):
         "distR": np.round(np.asarray(distR).reshape(1, -1), precision).tolist(),
         "R": np.round(R, precision).tolist(),
         "T": np.round(T, precision).tolist(),
-        "E": np.round(E, precision).tolist(),
-        "F": np.round(F, precision).tolist(),
     }
     with open(path, "w") as handle:
         yaml.dump(data, handle, default_flow_style=False)
@@ -164,7 +164,7 @@ def _fit(detections, grid, square_m, image_shape, rational):
     # The stereo step only refines the geometry between the eyes; the intrinsics above
     # are held fixed, which is why they are allowed to come from different frames.
     print(f"Fitting extrinsics: {len(stereo)} stereo pair(s)")
-    rms_stereo, mtxL, distL, mtxR, distR, R, T, E, F = stereo_calibrate(
+    rms_stereo, mtxL, distL, mtxR, distR, R, T = stereo_calibrate(
         [objp] * len(stereo),
         [d.corners_left for d in stereo],
         [d.corners_right for d in stereo],
@@ -188,7 +188,7 @@ def _fit(detections, grid, square_m, image_shape, rational):
 
     result = {
         "mtxL": mtxL, "distL": distL, "mtxR": mtxR, "distR": distR,
-        "R": R, "T": T, "E": E, "F": F,
+        "R": R, "T": T,
         "rms_left": rms_left,
         "rms_right": rms_right,
         "rms_stereo": rms_stereo,
@@ -238,7 +238,7 @@ def _prune(detections, errors, max_reproj, max_mono):
 
 
 def solve(detections, grid, square_m, image_shape, out_yaml,
-          rational=False, prune=True, max_reproj=1.5, max_mono=1.0):
+          rational=True, prune=True, max_reproj=1.5, max_mono=1.0):
     """Calibrate, optionally prune, and refit once.
 
     ``square_m`` is in metres, so T comes out in metres like the firmware expects.
@@ -263,7 +263,7 @@ def solve(detections, grid, square_m, image_shape, out_yaml,
     save_calibration(
         out_yaml,
         result["mtxL"], result["distL"], result["mtxR"], result["distR"],
-        result["R"], result["T"], result["E"], result["F"],
+        result["R"], result["T"],
     )
     result["used"] = [d for d in detections if d.ok]
     result["stereo_used"] = [d for d in detections if d.use_stereo]

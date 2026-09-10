@@ -31,7 +31,7 @@ LINE_COLORS = [(0, 255, 0), (0, 0, 255), (255, 0, 0)]
 
 # The rectified pair is 3840x1080; the canvas is built at display size so the overlay
 # is drawn once, small, instead of being rescaled by the GUI every frame.
-DEFAULT_DISPLAY_WIDTH = 1600
+DEFAULT_DISPLAY_WIDTH = 1920
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 GOOD = (0, 255, 0)
