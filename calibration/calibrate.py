@@ -48,6 +48,7 @@ DEPLOY_PATH = os.path.join(
 DEPLOY_USER = "bmt"
 DEPLOY_REMOTE_PATH = "~/4d_firmware/calib/stereo_calibration.yaml"
 RESTART_COMMAND = "sudo systemctl restart stereo_4d.service"
+KNOWN_HOSTS = os.path.expanduser("~/.ssh/known_hosts")
 
 DEFAULT_GRID = "9x6"
 DEFAULT_SQUARE_MM = 25.0
@@ -267,12 +268,41 @@ def remote_destination(ip):
     return f"{DEPLOY_USER}@{ip}:{DEPLOY_REMOTE_PATH}"
 
 
+def forget_host_key(destination):
+    """Drop the camera's entry from known_hosts before connecting.
+
+    The unit is reflashed often and comes back with a new host key, at which point ssh
+    refuses to connect at all until the stale entry is cleared. Clearing it every time
+    keeps the deploy working, at the cost of the protection that check gives: whatever
+    key answers on that address next is the one accepted. That is a fair trade on a
+    private link to a device you reimage; it would not be on anything routable.
+
+    Skipped for a local destination, which has no host to forget.
+    """
+    host, sep, _ = destination.partition(":")
+    if not sep or "/" in host:
+        return
+    host = host.rpartition("@")[2]
+    if not os.path.exists(KNOWN_HOSTS):
+        return
+
+    command = ["ssh-keygen", "-f", KNOWN_HOSTS, "-R", host]
+    print("  " + " ".join(command), flush=True)
+    try:
+        # ssh-keygen reports a host it never had as a non-zero exit; that is not a
+        # failure worth stopping a deploy over, so the result is not checked.
+        subprocess.run(command, stdout=subprocess.DEVNULL)
+    except FileNotFoundError:
+        print("ssh-keygen is not installed here; leaving known_hosts alone.")
+
+
 def send_to_camera(session_yaml, destination):
     """rsync the calibration onto the camera, keeping the copy that was there.
 
     Returns True once the file is across. The calibration is already saved locally
     either way, so a failure here is reported and the run still ends cleanly.
     """
+    forget_host_key(destination)
     command = [
         "rsync", "-v",
         "--backup", f"--suffix=.bak-{time.strftime('%Y%m%d-%H%M%S')}",
@@ -372,6 +402,8 @@ def parse_args():
     deploy.add_argument("--send-to", metavar="DEST",
                         help="rsync destination (default "
                              f"{DEPLOY_USER}@<--ip>:{DEPLOY_REMOTE_PATH})")
+    parser.add_argument("--no-sound", dest="sound", action="store_false",
+                        help="capture without the two cue tones")
     parser.add_argument("-y", "--yes", action="store_true",
                         help="accept every default without prompting")
     return parser.parse_args()
@@ -379,6 +411,9 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if not args.sound:
+        from calibration import sound
+        sound.disable()
     session = make_session(args.name)
     print(f"Session: {session}\n")
 

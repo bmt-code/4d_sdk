@@ -140,28 +140,54 @@ def match_color(score, accept, near):
     return _lerp(WARN, BAD, (score - near) / max(near, 1e-6))
 
 
-def board_guide(image, points, grid, color=ACCENT, thickness=2):
-    """The wanted board pose, drawn as the board's own grid.
+def board_guide(image, lattice, color=ACCENT, thickness=4, alpha=0.45):
+    """The wanted board pose, drawn as a checkerboard rather than a wireframe.
 
-    Rows and columns of the projected inner corners, plus a heavier outline and a marked
-    origin corner. Drawn as lines rather than a filled shape so the live board stays
-    readable underneath it, and so the yaw is visible in the convergence of the rows
-    instead of needing a label to explain which way to turn.
+    The operator is holding a checkerboard and matching it to this, so the guide is drawn
+    as one: the cells between the projected inner corners are filled in alternation, which
+    lands exactly on the squares of a correctly placed board. A wireframe of the same
+    corners reads as a grid a square smaller than the board on every side -- the inner
+    corners are inset from the physical edge -- and matching an outline to a board it does
+    not coincide with is a guess.
+
+    Filled translucently so the live board stays visible through it: the match is judged by
+    the squares lining up, which needs both to be readable at once. The yaw stays legible
+    in the convergence of the rows.
     """
-    cols, rows = grid
-    pts = np.asarray(points, dtype=np.float32).reshape(rows, cols, 2)
+    pts = np.asarray(lattice, dtype=np.float32)
+    rows, cols = pts.shape[:2]
 
-    thin = max(1, thickness - 1)
-    for r in range(rows):
-        cv2.polylines(image, [pts[r].astype(np.int32)], False, color, thin, cv2.LINE_AA)
-    for c in range(cols):
-        cv2.polylines(image, [pts[:, c].astype(np.int32)], False, color, thin, cv2.LINE_AA)
+    # Compose the fill on a copy of just the region it touches, so the blend costs the
+    # guide's own area rather than the whole preview.
+    x0 = max(0, int(pts[..., 0].min()) - 2)
+    y0 = max(0, int(pts[..., 1].min()) - 2)
+    x1 = min(image.shape[1], int(pts[..., 0].max()) + 3)
+    y1 = min(image.shape[0], int(pts[..., 1].max()) + 3)
+    if x1 > x0 and y1 > y0:
+        region = image[y0:y1, x0:x1]
+        overlay = region.copy()
+        offset = np.array([x0, y0], np.float32)
+        for r in range(rows - 1):
+            for c in range(cols - 1):
+                if (r + c) % 2:
+                    continue
+                cell = np.array([pts[r, c], pts[r, c + 1],
+                                 pts[r + 1, c + 1], pts[r + 1, c]], np.float32) - offset
+                cv2.fillConvexPoly(overlay, cell.astype(np.int32), color, cv2.LINE_AA)
+        cv2.addWeighted(overlay, alpha, region, 1 - alpha, 0, region)
 
+    # The border carries the aim: the fill says where the squares go, the border says where
+    # the board ends, and that is the edge the operator lines up against. It has always
+    # been fully opaque -- alpha only ever touched the fill -- but drawn in the same colour
+    # as the tint right behind it there was nothing to see it against, so it read as
+    # washed out. A dark keyline underneath gives it that contrast over any background.
     outline = np.array([pts[0, 0], pts[0, -1], pts[-1, -1], pts[-1, 0]], np.int32)
+    cv2.polylines(image, [outline], True, _bgr((6, 12, 20)), thickness + 4, cv2.LINE_AA)
     cv2.polylines(image, [outline], True, color, thickness, cv2.LINE_AA)
     # One corner marked, so a board held upside down is obvious.
-    cv2.circle(image, tuple(pts[0, 0].astype(int)), max(3, thickness + 2), color, -1,
-               cv2.LINE_AA)
+    origin = tuple(pts[0, 0].astype(int))
+    cv2.circle(image, origin, max(5, thickness + 4), _bgr((6, 12, 20)), -1, cv2.LINE_AA)
+    cv2.circle(image, origin, max(3, thickness + 2), color, -1, cv2.LINE_AA)
 
 
 def progress_bar(image, box, fraction, color=ACCENT, ground=RULE):

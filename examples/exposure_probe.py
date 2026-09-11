@@ -113,12 +113,27 @@ def _report(handler, args, counts, seen, mislabelled):
     show("frame period meas/ass",
          f"{stats.get('frame_period_measured_us')} / {stats.get('frame_period_us')}")
     show("targets S/L", f"{stats.get('short_us')} / {stats.get('long_us')}")
+    # Colour gains, per eye. The two eyes should read the same: each is its own ISP, so with
+    # two AWB loops running they settle apart and the pair comes back with one eye warmer than
+    # the other. "mirrored" means the firmware is holding them together, "pinned" that a fixed
+    # pair is set, and neither means each eye is picking its own.
+    gains = stats.get("colour_gains") or {}
+    held = ("pinned" if stats.get("awb_gains") else
+            "mirrored" if stats.get("awb_mirror") else "free")
+    show("colour L/R", f"{_gains(gains.get('left'))} / {_gains(gains.get('right'))}  ({held})")
     if stats.get("ae_railed"):
         show("", "RAILED -- a controller wants more light than its band can give")
 
 
 def _pct(value):
     return "--" if value is None else f"{value:.2f}%"
+
+
+def _gains(value):
+    """(red, blue) colour gains, or -- when the camera did not report any."""
+    if not value or len(value) != 2:
+        return "--"
+    return f"{value[0]:.2f},{value[1]:.2f}"
 
 
 if __name__ == "__main__":

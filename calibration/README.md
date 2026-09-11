@@ -80,9 +80,40 @@ are made of: measured as a mean, a square-on board scores no better against a tu
 than a well-matched board does, and the poses collapse into each other. Taken as the worst
 corner the gap is threefold.
 
-Two gates remain that the guide cannot express: the board must be **still** (the eyes are
+The miss is split in two before it is judged. **Roll comes out entirely** — a board tilted
+in its own plane is exactly as good a calibration frame as a level one, and charging it at
+the board's half-diagonal used to spend the whole tolerance on four degrees of wrist.
+**Where the board sits is charged at half weight**, and the shape is then measured against
+the same pose re-projected where the board actually is, so being off-centre is not charged
+twice. What is left to match:
+
+| | tolerance |
+|---|---|
+| off the outline | ±9% of the board's width |
+| too near or too far | ±6% |
+| yaw | ±12° |
+| roll | free |
+
+The slack on position is not free of consequence: the poses at one placement are separated
+mostly by where yaw puts the board's centre, so forgiving position forgives some of that.
+Square on is still refused for a turned target everywhere but the far band. Which *way* you
+turn it is no longer enforced — a checkerboard yawed one way and spun 180° in its own plane
+is the same picture as the opposite yaw, so it never was reliably enforceable. Follow the
+guide; the tool will not argue.
+
+One more gate the guide cannot express: the board has to have **actually moved** since the
+last saved frame, measured on its worst-moving corner. Without it a stationary board
+satisfies every queued placement in turn and the tool fires three times over while you
+stand there. Measured on the worst corner rather than the average because turning the
+board pivots it about its centre — the middle corners barely move, so an average makes a
+real pose change look like standing still.
+
+Two further gates the guide cannot express: the board must be **still** (the eyes are
 not exposed together, so a moving board lands in two different places and the pruner drops
-the pair later), and it must be **sharp**. Both only apply once the pose is matched --
+the pair later), and it must be **sharp**. "Still" is 5 px of corner motion per check held
+for 0.3 s -- set from what the desync needs rather than from what looks still, since two
+eyes a couple of milliseconds apart turn even 40 px/s into under a tenth of a pixel between
+them. Both only apply once the pose is matched --
 before that you are still moving on purpose, which is why the hold-still bar only appears
 once the outline turns green.
 
@@ -91,13 +122,32 @@ once the outline turns green.
 Every position is worked three ways: square on, then turned so the left edge comes towards
 the camera, then the right. Turn on the spot; you do not walk between the three.
 
+**Per-eye placements** — these fit each camera's own lens, and the closest of them cannot
+be in both eyes whatever you do:
+
 | Band | Board fills | Roughly | Positions per eye | Frames |
 |---|---|---|---|---|
-| very close | 70% of the frame | 0.34 m | 1 | 6 |
-| close | 55% | 0.43 m | 2x2 | 24 |
-| mid | 38% | 0.63 m | 3x3 | 54 |
-| far | 25% | 0.95 m | 2x2 | 24 |
-| | | | | **108** |
+| very close | 50% of the frame | 0.48 m | 1 | 6 |
+| close | 40% | 0.59 m | 2x2 | 24 |
+| mid | 31% | 0.77 m | 3x2 | 36 |
+
+**Both-eye placements** — the only ones that say anything about where one camera sits
+relative to the other. They start further out because they have to: the cameras are 293 mm
+apart, so at 0.48 m a board filling one eye is entirely outside the other.
+
+**Hold the board upright for these** — stood on its end. The strip both cameras can see is
+narrow and tall, so an upright board reaches the overlap at ranges a landscape one cannot,
+and fits more placements across it. The header says `UPRIGHT` when it wants one, and the
+guide is drawn on end so there is nothing to remember.
+
+| Band | Board fills | Roughly | Positions | Frames |
+|---|---|---|---|---|
+| stereo near | 19% | 0.78 m | 2x2 | 12 |
+| stereo far | 15% | 0.99 m | 2x2 | 12 |
+| | | | | **90 total** |
+
+The fills look small next to the per-eye bands because an upright board spans the frame
+with its short side.
 
 It starts almost filling the frame and works out. The first band is one position, and that
 single frame is what pins the distortion at the very edge of the field -- nothing further
@@ -178,11 +228,17 @@ Two prompts at the end, both defaulting to no:
 
 1. Copy the result into the sibling `4d_firmware/calib/stereo_calibration.yaml` — the
    tree that gets rsynced to a unit. Whatever was there is backed up first.
-2. **Send it to the camera** — rsyncs onto the unit at
+2. **Send it to the camera** — clears the unit's entry from `~/.ssh/known_hosts`, then
+   rsyncs onto the unit at
    `bmt@172.31.1.77:~/4d_firmware/calib/stereo_calibration.yaml`, which is the copy the
    running firmware actually reads. The host follows `--ip`, so pointing at another unit
    deploys to that one; `--send-to` overrides the whole destination. The file already on
    the camera is kept as `stereo_calibration.yaml.bak-<timestamp>`.
+
+The `ssh-keygen -R` first is because the unit is reflashed often and comes back with a new
+host key, which stops ssh connecting until the stale entry is gone. It does mean whatever
+answers on that address next is accepted without checking — fine on a private link to a
+device you reimage, not something to copy onto anything routable.
 
 The firmware only reads the calibration at start-up, so it prints the restart line for
 you afterwards:

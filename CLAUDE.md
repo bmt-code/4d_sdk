@@ -28,6 +28,12 @@ python3 calibration/calibrate.py --images examples/images_stereo_4d --grid 9x6 -
 
 ```
 
+`python3 tests/test_capture_smoke.py` draws the capture window without a camera, and
+`python3 -m pyflakes calibration/*.py` catches the rest: the capture loop cannot be run on a
+desk, so a rename that leaves it calling a drawing function with an argument nobody set
+otherwise only surfaces when someone is stood in front of the camera. Run both after
+touching `capture.py`.
+
 There is no full test suite. `python3 tests/test_exposure_frame.py` covers the dual-exposure
 parsing and bookkeeping without a camera, and the calibration pipeline can be exercised end
 to end on the committed images with
@@ -103,6 +109,52 @@ mean and both exposures land in the same place.
 
 ### Calibration (`calibration/`)
 
+**Stereo placements ask for the board upright** (`Target.roll_deg = 90`): the strip both
+cameras see is narrow and tall, so an upright board reaches the overlap where a landscape
+one does not. `Target.rvec()` is the single source of that convention -- roll in the board's
+own plane, then yaw about the camera's vertical. Anything rebuilding a board at a placement
+must use it; composing from `yaw_deg` alone silently drops the roll and puts a landscape
+board where an upright one was asked for, which broke two tests at once.
+
+**Guide geometry, two traps.** The drawn guide is `Target.guide_full()` -- the whole
+board, a square wider on every side than the inner corners a detector reports -- so any
+inset or fit check sized from `guide_corners()` is wrong by that square: doing so once put
+92 of 108 guides partly off the sensor while the test said all was well. Placements are
+now clamped by `Target.fit_into_frame()`, which re-projects and nudges until the drawn
+board is inside, because a board projects larger and more skewed the further off-axis it
+sits, so a margin measured at the centre still clips at the edges. Second trap:
+`np.linspace(a, b, 1)` returns `[a]`, so `TargetPlan._spread` exists to put a single
+position in the middle of the frame rather than against the margin -- which is where the
+one close-up frame, the only thing pinning corner distortion, least wants to be.
+
+**The shutter has three gates beyond the guide**, and two of them have bitten already:
+the board must be still, sharp, and have *moved since the last saved frame*. That last one
+is measured on the **worst-moving corner**, never an average — yaw pivots the board about
+its centre, so a genuine pose change shifts the median only 20-30 px and an average-based
+gate refuses the very pose it just asked for, sitting at a full stillness gauge while the
+hint reads "change the pose". And the shot cooldown starts when a frame is *saved*, not
+when one is attempted.
+
+**Capture tolerances trade against pose discrimination.** The three poses at one placement
+are separated mostly by *where yaw puts the board's projected centre*, not by its shape, so
+forgiving a centring error forgives most of the separation with it. Position was
+deliberately loosened anyway (`POSITION_WEIGHT = 0.5` charges a centring error at half, so
+position tolerance is twice the shape tolerance -- about 9% of the board's width). The cost,
+recorded band by band in `test_the_three_poses_stay_distinct`:
+
+- **square on is still refused for a turned target** -- the tilt requirement -- in every
+  band but `far`, where the board subtends a quarter of the frame and its yaw skews the
+  corners by less than the position slack allows;
+- **which way the board is turned is no longer enforced.** A symmetric checkerboard yawed
+  one way and rotated 180 deg in its own plane projects the same quad as the opposite yaw,
+  so direction only ever showed up as that small centre shift.
+
+Two things that are *not* knobs on this: raising `ACCEPT_SCORE` alone (it gates distance
+and yaw too), and widening the pose yaw (the ambiguity is geometric, not a matter of
+separation). Roll is free by design -- `derotate` takes it out before scoring, since a
+rolled board is exactly as good a calibration frame and charging it at the board's
+half-diagonal spent the whole tolerance on 4.5 degrees of wrist.
+
 **Capture protocol** (determined empirically on this rig, and what the pipeline is built
 around): two close-ups with the board hard against the left and right of the field —
 one eye each, it cannot be in both at that range, and these are what fit focal length and
@@ -120,14 +172,21 @@ edited in source. Modules:
   folders flagged) to pick by number, and `resolve_source()` accepts either a
   session directory or a raw image folder wherever a path is given, `--images`
   included.
-- `capture.py` — stage 1, the `image_saver.py` flow plus a per-eye board indicator, a
-  coverage map showing which parts of each eye a saved board has reached, and SPACE for
-  a manual shot; captures raw (`rectify_internally=False`). Both this and `verify.py`
+- `capture.py` — stage 1, guided capture: shows **only the eye the current target belongs
+  to**, with the header and footer in their own bands of canvas above and below rather
+  than painted over the frame. SPACE forces a shot; captures raw
+  (`rectify_internally=False`). Both this and `verify.py`
   render at `--preview-width` (1600) instead of the sensor's 3840, and gate every live
   board search behind `find_corners_fast` (half-size, FAST_CHECK only, ~6 ms). The
   ungated full search costs ~300 ms an eye when there is no board to find and is what
   makes the windows feel stuck — never call `find_corners`/`find_checkerboard` straight
   from a display loop.
+- `sound.py` — two cue tones, rendered to WAV once and played by whichever of
+  `paplay`/`pw-play`/`aplay`/`ffplay` exists, spawned detached so nothing can stall the
+  capture loop (`play()` returns in well under a millisecond). Every failure path is quiet:
+  no player, no audio, no writable temp dir and capture just runs silently. `near` fires on
+  the rising edge of a matched pose only, with a repeat guard, since the score dithers
+  around the threshold and would otherwise machine-gun.
 - `window.py` — `open_window` and `bring_to_front`, shared by both views.
   `bring_to_front` toggles `WND_PROP_TOPMOST` on and straight off, which raises the
   window without pinning it; it must be called *after* the first `imshow` (an empty
@@ -165,7 +224,10 @@ deleted), `stereo_calibration.yaml`, `params.yaml` and `report.txt`. The last pr
 offers to copy the YAML into the sibling `4d_firmware/calib/stereo_calibration.yaml`,
 backing up what is there, and then to rsync it onto the camera at
 `bmt@<--ip>:~/4d_firmware/calib/stereo_calibration.yaml` (`--send`/`--no-send`/`--send-to`;
-`rsync --backup` keeps the unit's previous file). Both prompts default to no, and `--yes`
+`rsync --backup` keeps the unit's previous file). Every send first runs
+`ssh-keygen -f ~/.ssh/known_hosts -R <host>`: the unit is reflashed often and a changed host
+key otherwise blocks ssh outright. That trades away the host-key check on that address, which
+is acceptable on a private link to a reimaged device and should not be copied elsewhere. Both prompts default to no, and `--yes`
 alone never deploys. The firmware only reads the calibration at start-up, so the run
 prints the `systemctl restart stereo_4d.service` line afterwards.
 

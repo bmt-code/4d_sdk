@@ -33,7 +33,7 @@ import time
 import cv2
 import numpy as np
 
-from calibration import hud
+from calibration import hud, sound
 from calibration.quality import find_corners_fast, sharpness, split_stereo, to_gray
 from calibration.targets import (
     ACCEPT_SCORE,
@@ -55,23 +55,36 @@ DEFAULT_TOTAL_SHOTS = 100
 # How often the board search re-runs. It drives the guides, not the stream.
 BOARD_CHECK_INTERVAL = 0.12
 # Corner motion below this, between consecutive checks, counts as still (full-res px).
-STILL_MOTION_PX = 2.2
+# Held to what the desync actually needs rather than to what looks still: the two eyes are
+# a couple of milliseconds apart, so even 5 px per 0.12 s check -- about 40 px/s -- puts
+# under a tenth of a pixel between them, far inside the corner noise. Tighter than this
+# only fights the operator's hands.
+STILL_MOTION_PX = 5.0
 # How long it has to stay still before the shutter releases.
-STILL_SECONDS = 0.35
+STILL_SECONDS = 0.30
 # Sharpness must clear this fraction of the running median of what has been saved.
 BLUR_RATIO = 0.6
 # Never shoot the same target twice within this many seconds.
 SHOT_COOLDOWN = 0.6
 # The board has to have actually moved since the last saved frame, in full-res pixels of
-# median corner displacement. Without this, one good position quietly satisfies the next
-# queued target too and the tool fires several times over while the operator stands still.
-MOVED_SINCE_SHOT_PX = 45.0
+# the *worst* corner's displacement. Without some such gate a stationary board satisfies
+# every queued target in turn and the tool fires several times over while the operator
+# stands still -- especially now the match tolerance is loose enough not to object.
+#
+# Measured on the worst corner, not the median. Turning the board pivots it about its
+# centre, so the middle corners barely move and the median stays around 20-30 px for a
+# perfectly good pose change -- under the old 45 px median gate the tool refused the very
+# thing it had just asked for, sat at a full stillness gauge, and told the operator to
+# change the pose they had already changed. The worst corner never moves less than 45 px
+# for a real re-pose, and only detector noise for a board held still, so one threshold
+# separates them with room to spare.
+MOVED_SINCE_SHOT_PX = 25.0
 # The preview is mirrored: the operator stands in front of the camera looking at the
 # screen, so an unmirrored image sends them the wrong way every time.
 MIRROR_PREVIEW = True
 
-HUD_HEIGHT = 138
-FOOTER_HEIGHT = 34
+HUD_HEIGHT = 132
+FOOTER_HEIGHT = 32
 
 
 def list_images(folder):
@@ -155,132 +168,131 @@ class Stillness:
         return min(1.0, (now - self.since) / STILL_SECONDS)
 
 
-def _to_screen_x(x_full, eye, scale, width):
-    """One x in an eye's full-res pixels -> x on the (mirrored) preview."""
-    x = x_full * scale + (0 if eye == "left" else width // 2)
-    return width - x if MIRROR_PREVIEW else x
+def _to_screen(points, scale, origin_y, pane_x, pane_w):
+    """Full-res points in one eye -> canvas pixels.
 
-
-def _to_screen(points, eye, scale, width):
-    """Full-res points in one eye -> preview points, mirrored to match the operator."""
-    pts = np.asarray(points, dtype=np.float64).reshape(-1, 2).copy()
-    pts[:, 0] = pts[:, 0] * scale + (0 if eye == "left" else width // 2)
-    pts[:, 1] *= scale
+    Mirrored within the pane rather than across the canvas: with both eyes shown, flipping
+    the whole strip would swap which camera is on which side.
+    """
+    pts = np.asarray(points, dtype=np.float32).reshape(-1, 2) * scale
     if MIRROR_PREVIEW:
-        pts[:, 0] = width - pts[:, 0]
+        pts[:, 0] = pane_w - 1 - pts[:, 0]
+    pts[:, 0] += pane_x
+    pts[:, 1] += origin_y
     return pts
 
 
-def _draw_targets(preview, plan, scale, state):
-    """The wanted board pose, the position after it, and a dot per pose already covered."""
-    width = preview.shape[1]
+def _draw_targets(canvas, plan, scale, origin_y, state):
+    """The wanted board pose, and a dot per pose already covered in this eye."""
+    width = canvas.shape[1]
     target = plan.current
-
-    for eye in ("left", "right"):
-        for done in plan.completed(eye):
-            x, y, w, h = done.box
-            cx, cy = _to_screen([[x + w / 2, y + h / 2]], eye, scale, width)[0]
-            cv2.circle(preview, (int(cx), int(cy)), 3, hud.DONE, -1, cv2.LINE_AA)
-
     if target is None:
         return
 
-    # The guide is coloured by how close the board is to matching it -- red, through amber,
-    # to green -- so the operator can steer by the outline instead of reading a number.
+
+    for done in plan.completed(target.eye):
+        x, y, w, h = done.box
+        cx, cy = _to_screen([[x + w / 2, y + h / 2]], scale, origin_y, 0, width)[0]
+        cv2.circle(canvas, (int(cx), int(cy)), 3, hud.DONE, -1, cv2.LINE_AA)
+
+    # Coloured by how close the board is to matching -- red, through amber, to green -- so
+    # the operator can steer by the outline instead of reading a number.
     score = state.get("score")
     color = hud.ACCENT if score is None else hud.match_color(score, ACCEPT_SCORE, NEAR_SCORE)
-    hud.board_guide(preview, _to_screen(target.guide_corners(), target.eye, scale, width),
-                    plan.grid, color, thickness=2)
+    lattice = target.guide_full()
+    hud.board_guide(canvas,
+                    _to_screen(lattice.reshape(-1, 2), scale, origin_y,
+                               0, width).reshape(lattice.shape),
+                    color, thickness=4)
 
     # The stillness bar appears only once the pose is right. Before that it is answering a
     # question nobody is asking: the operator is still moving on purpose.
     if state.get("matched"):
-        x, y, w, h = target.box
-        left_x = _to_screen_x(x + w, target.eye, scale, width) if MIRROR_PREVIEW \
-            else _to_screen_x(x, target.eye, scale, width)
-        y_bar = min(y * scale + h * scale + 10, preview.shape[0] - FOOTER_HEIGHT - 10)
-        hud.progress_bar(preview, (left_x, y_bar, w * scale, 5),
+        pts = _to_screen(lattice.reshape(-1, 2), scale, origin_y, 0, width)
+        bar_w = float(pts[:, 0].max() - pts[:, 0].min())
+        y_bar = min(pts[:, 1].max() + 10, canvas.shape[0] - FOOTER_HEIGHT - 8)
+        hud.progress_bar(canvas, (pts[:, 0].min(), y_bar, bar_w, 5),
                          state["still_progress"], hud.DONE)
 
 
-def _draw_hud(preview, plan, saved, state):
-    """Header: what to do now on the left, how far through on the right.
+def _draw_hud(canvas, plan, saved, state):
+    """The header strip. Drawn above the image, never over it.
 
-    Two cards rather than one full-width band. The close-band targets are nearly
-    frame-sized and their top row sits under the header, so a bar spanning the width hides
-    the very bracket the operator is aiming at; leaving the middle clear keeps the image
-    visible where the guides actually are.
+    Anything painted on the frame competes with the one thing the operator is trying to
+    read -- their board against the guide -- and the close bands put a guide under wherever
+    the header would sit. So the header gets its own band of canvas instead.
     """
-    width = preview.shape[1]
-    target = plan.current
+    width = canvas.shape[1]
+    canvas[:HUD_HEIGHT] = hud.PANEL
+    cv2.line(canvas, (0, HUD_HEIGHT - 1), (width, HUD_HEIGHT - 1), hud.RULE, 1)
 
+    target = plan.current
     if target is None:
-        hud.panel(preview, (0, 0, 420, HUD_HEIGHT))
-        hud.label(preview, "Coverage complete", (16, 46), hud.DONE, scale=0.8)
-        hud.label(preview, f"{saved} frames saved  -  press q to solve",
-                  (16, 82), hud.INK_MUTED, scale=0.56, small=True)
+        hud.label(canvas, "Coverage complete", (16, 40), hud.DONE, scale=0.8)
+        hud.label(canvas, f"{saved} frames saved  -  press q to solve",
+                  (16, 74), hud.INK_MUTED, scale=0.56, small=True)
         return
 
-    # --- left card: the instruction ---
     done_here, total_here = plan.pose_progress()
-    headline = (f"{target.eye.upper()} EYE   {target.band}   {target.depth:.1f} m"
-                f"   pose {done_here + 1}/{total_here}")
-    (head_w, _), _ = cv2.getTextSize(headline, hud.FONT, 0.72, 1)
-    (hint_w, _), _ = cv2.getTextSize(state["hint"], hud.FONT_SMALL, 0.56, 1)
-    card_w = max(head_w, hint_w, 300) + 32
-    hud.panel(preview, (0, 0, card_w, HUD_HEIGHT))
-
-    hud.label(preview, headline, (16, 34), hud.INK, scale=0.72)
-    hud.label(preview, target.pose.upper(), (16, 62), hud.ACCENT, scale=0.62)
-    hud.label(preview, state["hint"], (16, 88),
+    hud.label(canvas, f"{target.eye.upper()} EYE   {target.band}   {target.depth:.2f} m",
+              (16, 30), hud.INK, scale=0.68)
+    stance = "UPRIGHT" if target.upright else "FLAT"
+    hud.label(canvas, f"{stance}, {target.pose.upper()}   (pose {done_here + 1}/{total_here})",
+              (16, 58), hud.ACCENT, scale=0.6)
+    hud.label(canvas, state["hint"], (16, 84),
               hud.DONE if state["ready"] else hud.INK_MUTED, scale=0.56, small=True)
 
     x = 16
     score = state.get("score")
     chips = [(("match %d%%" % round(100 * max(0.0, 1 - score / NEAR_SCORE)))
               if score is not None and np.isfinite(score) else "no board",
-              state.get("matched", False), True)]
+              state.get("matched", False))]
     if state.get("matched"):
-        chips.append(("still" if state["still"] else "moving", state["still"], True))
-        chips.append(("sharp" if state["sharp_ok"] else "soft", state["sharp_ok"], True))
-    for text, ok, shown in chips:
-        if not shown:
-            continue
-        x += hud.chip(preview, text, (x, 100), hud.DONE if ok else hud.WARN,
-                      filled=ok) + 7
+        chips.append(("still" if state["still"] else "moving", state["still"]))
+        chips.append(("sharp" if state["sharp_ok"] else "soft", state["sharp_ok"]))
+    for text, ok in chips:
+        x += hud.chip(canvas, text, (x, HUD_HEIGHT - 34),
+                      hud.DONE if ok else hud.WARN, filled=ok) + 7
 
-    # --- right card: progress ---
-    bands = plan.band_progress()
-    parts = "   ".join(f"{name} {done}/{want}" for name, (done, want) in bands.items())
-    (parts_w, _), _ = cv2.getTextSize(parts, hud.FONT_SMALL, 0.5, 1)
-    right_w = max(parts_w + 32, 280)
-    right_x = width - right_w
-    hud.panel(preview, (right_x, 0, right_w, HUD_HEIGHT))
-
+    # --- right: progress ---
     counter = f"{plan.taken} / {plan.wanted}"
     (tw, _), _ = cv2.getTextSize(counter, hud.FONT, 0.72, 1)
-    hud.label(preview, counter, (width - tw - 16, 34), hud.INK, scale=0.72)
-    hud.progress_bar(preview, (right_x + 16, 52, right_w - 32, 6),
+    hud.label(canvas, counter, (width - tw - 16, 32), hud.INK, scale=0.72)
+    bands = plan.band_progress()
+    parts = "   ".join(f"{name} {done}/{want}" for name, (done, want) in bands.items())
+    (pw, _), _ = cv2.getTextSize(parts, hud.FONT_SMALL, 0.5, 1)
+    hud.progress_bar(canvas, (width - pw - 16, 46, pw, 6),
                      plan.taken / max(1, plan.wanted))
-    hud.label(preview, parts, (width - parts_w - 16, 86), hud.INK_MUTED,
-              scale=0.5, small=True)
+    hud.label(canvas, parts, (width - pw - 16, 76), hud.INK_MUTED, scale=0.5, small=True)
 
 
-def _draw_footer(preview, saved):
-    """Key hints on the left, frame count on the right. Partial-width, as the header."""
-    height, width = preview.shape[:2]
+def _draw_footer(canvas, saved, corners):
+    """The footer strip, also outside the image.
+
+    Board visibility is read straight off the corners the loop already found, rather than
+    mirrored into a second variable -- keeping two copies in step is what left this
+    referring to a name nobody set.
+    """
+    height, width = canvas.shape[:2]
     y = height - FOOTER_HEIGHT
-    keys = "space shoot   s skip pose   x skip spot   q done"
-    spaced = " ".join(keys.upper())
-    (kw, _), _ = cv2.getTextSize(spaced, hud.FONT_SMALL, 0.44, 1)
-    hud.panel(preview, (0, y, kw + 32, FOOTER_HEIGHT), alpha=0.66)
-    hud.caption(preview, keys, (16, y + 22), hud.INK_MUTED, scale=0.44)
+    canvas[y:] = hud.PANEL
+    cv2.line(canvas, (0, y), (width, y), hud.RULE, 1)
+    # label(), not caption(): caption letter-spaces for headings, which turns a row of key
+    # hints into a wall the eye cannot skim.
+    hud.label(canvas, "SPACE shoot    s skip pose    x skip spot    q done",
+              (16, y + 21), hud.INK_MUTED, scale=0.46, small=True)
 
     text = f"{saved} saved"
     (tw, _), _ = cv2.getTextSize(text, hud.FONT_SMALL, 0.54, 1)
-    hud.panel(preview, (width - tw - 32, y, tw + 32, FOOTER_HEIGHT), alpha=0.66)
-    hud.label(preview, text, (width - tw - 16, y + 22), hud.INK_MUTED,
+    hud.label(canvas, text, (width - tw - 16, y + 21), hud.INK_MUTED,
               scale=0.54, small=True)
+
+    left_ok = corners.get("left") is not None
+    right_ok = corners.get("right") is not None
+    seen = f"board  L {'ok' if left_ok else '--'}  R {'ok' if right_ok else '--'}"
+    (sw, _), _ = cv2.getTextSize(seen, hud.FONT_SMALL, 0.46, 1)
+    hud.label(canvas, seen, (width - tw - sw - 44, y + 21),
+              hud.DONE if (left_ok or right_ok) else hud.INK_MUTED, scale=0.46, small=True)
 
 
 def capture_images(out_dir, ip="172.31.1.77", interval=None, grid=None, timeout=60.0,
@@ -306,6 +318,7 @@ def capture_images(out_dir, ip="172.31.1.77", interval=None, grid=None, timeout=
     still = Stillness()
     last_shot_corners = None
     corners = {"left": None, "right": None}
+    was_matched = False
     state = {"hint": "Looking for the board", "ready": False, "near": False,
              "matched": False, "score": None, "still": False, "sharp_ok": True,
              "still_progress": 0.0}
@@ -322,6 +335,7 @@ def capture_images(out_dir, ip="172.31.1.77", interval=None, grid=None, timeout=
         path = os.path.join(out_dir, f"frame_{len(saved):03d}.png")
         cv2.imwrite(path, frame.image)
         saved.append(path)
+        sound.play("shot")
         print(f"Saved {os.path.basename(path)}  ({reason})")
         return path
 
@@ -381,6 +395,12 @@ def capture_images(out_dir, ip="172.31.1.77", interval=None, grid=None, timeout=
                 state["sharp_ok"] = sharp_ok
 
                 state["ready"] = bool(ok and state["still"] and sharp_ok)
+
+                # On the way in only: the cue is "you are on it, now hold still", and
+                # repeating it while they hold still is the opposite of helpful.
+                if state["matched"] and not was_matched:
+                    sound.play("near")
+                was_matched = state["matched"]
                 if plan and plan.finished:
                     state["hint"] = "All positions covered"
                 elif not state["near"]:
@@ -401,44 +421,53 @@ def capture_images(out_dir, ip="172.31.1.77", interval=None, grid=None, timeout=
                 if last_shot_corners is not None and wanted is not None:
                     here = np.asarray(wanted).reshape(-1, 2)
                     if here.shape == last_shot_corners.shape:
-                        moved = float(np.median(np.linalg.norm(
+                        moved = float(np.max(np.linalg.norm(
                             here - last_shot_corners, axis=1))) > MOVED_SINCE_SHOT_PX
                 state["moved"] = moved
                 if state["ready"] and not moved:
                     state["hint"] = "Change the pose"
 
                 if state["ready"] and moved and now - last_shot > SHOT_COOLDOWN:
-                    last_shot = now
+                    # The cooldown starts when a frame is actually saved. Starting it on
+                    # the attempt meant a refused credit silently ate the next 0.6 s too.
                     if plan.credit(corners["left"], corners["right"]):
+                        last_shot = now
                         sharpness_log.append(state.get("sharp_value", 0.0))
                         shoot(frame, f"{target.band} {target.eye} {target.pose}")
                         last_shot_corners = np.asarray(wanted).reshape(-1, 2).copy()
                         still.since = None
 
+            # One eye, always -- the left unless a placement belongs to the right. Two
+            # panes halve the size of the thing being aimed at, and the idle one only
+            # distracts. A stereo placement is no exception: it is specified in one eye and
+            # aimed at in one eye, and whether the other camera can see it is a yes/no the
+            # footer already answers.
+            target_now = plan.current if plan else None
             if preview_size is None:
-                height, width = frame.image.shape[:2]
-                preview_size = (preview_width, round(preview_width * height / width))
-                scale = (preview_width // 2) / left.shape[1]
+                scale = preview_width / left.shape[1]
+                eye_h = round(left.shape[0] * scale)
+                preview_size = (preview_width, HUD_HEIGHT + eye_h + FOOTER_HEIGHT)
                 cv2.resizeWindow(WINDOW, *preview_size)
 
-            preview = cv2.resize(frame.image, preview_size, interpolation=cv2.INTER_NEAREST)
+            band_h = preview_size[1] - HUD_HEIGHT - FOOTER_HEIGHT
+            shown = left if (target_now is None or target_now.eye == "left") else right
+            eye = cv2.resize(shown, (preview_width, band_h),
+                             interpolation=cv2.INTER_NEAREST)
             if MIRROR_PREVIEW:
                 # Mirrored, because the operator stands in front of the camera looking at
                 # the screen: unmirrored, every instruction sends them the wrong way. The
-                # image is flipped first and the overlays are placed in mirrored
-                # coordinates, so the guides move with the operator but the text does not
-                # come out backwards.
-                preview = cv2.flip(preview, 1)
-            cv2.line(preview, (preview_size[0] // 2, HUD_HEIGHT),
-                     (preview_size[0] // 2, preview_size[1] - FOOTER_HEIGHT),
-                     hud.RULE, 1, cv2.LINE_AA)
+                # guides are placed in mirrored coordinates too, so they move with the
+                # operator while the text stays the right way round.
+                eye = cv2.flip(eye, 1)
+            scale = preview_width / shown.shape[1]
+
+            canvas = np.zeros((preview_size[1], preview_size[0], 3), np.uint8)
+            canvas[HUD_HEIGHT:HUD_HEIGHT + eye.shape[0]] = eye
             if plan is not None:
-                # Panels first, guides over them. The guides tile the whole frame, so a
-                # card drawn last hides whichever placement sits behind it -- which is
-                # exactly the one the operator is being asked to fill.
-                _draw_hud(preview, plan, len(saved), state)
-                _draw_targets(preview, plan, scale, state)
-            _draw_footer(preview, len(saved))
+                _draw_hud(canvas, plan, len(saved), state)
+                _draw_targets(canvas, plan, scale, HUD_HEIGHT, state)
+            _draw_footer(canvas, len(saved), corners)
+            preview = canvas
 
             cv2.imshow(WINDOW, preview)
             if not raised:

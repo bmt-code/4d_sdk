@@ -28,6 +28,7 @@ from calibration.quality import Detection  # noqa: E402
 from calibration.solve import object_points, solve  # noqa: E402
 from calibration.targets import (  # noqa: E402
     ACCEPT_SCORE,
+    board_points,
     NEAR_SCORE,
     POSES,
     TargetPlan,
@@ -560,12 +561,17 @@ def test_the_guide_satisfies_its_own_target():
 
 
 def test_the_guide_stays_on_the_sensor():
-    """A guide drawn partly off the image is a placement nobody can fill."""
+    """A guide drawn partly off the image is a placement nobody can fill.
+
+    Measured on the *drawn* board, not the inner corners. The two are not the same thing:
+    the drawn guide is a square wider on every side, and checking only the inner grid once
+    passed every target while ninety of the hundred and eight were clipped by the frame.
+    """
     plan = TargetPlan(GRID, SQUARE_M, IMAGE_SIZE)
     width, height = IMAGE_SIZE
     off = []
     for target in plan.targets:
-        pts = target.guide_corners()
+        pts = target.guide_full().reshape(-1, 2)
         if (pts[:, 0].min() < 0 or pts[:, 1].min() < 0
                 or pts[:, 0].max() >= width or pts[:, 1].max() >= height):
             off.append(f"{target.band}/{target.eye}/{target.pose}")
@@ -596,8 +602,13 @@ def test_a_real_board_can_satisfy_every_target():
         angles = ([-3, 0, 3] if target.flat
                   else [target.yaw_deg * k for k in (0.85, 0.95, 1.0, 1.05, 1.15)])
         found = False
+        # The target's own roll is kept while the yaw is swept: an upright placement is
+        # only reachable by an upright board, and building the pose from yaw alone quietly
+        # tests a landscape one against it.
+        roll, _ = cv2.Rodrigues(np.array([0.0, 0.0, np.radians(target.roll_deg)]))
         for degrees in angles:
-            rvec = np.array([0.0, np.radians(degrees), 0.0])
+            yaw, _ = cv2.Rodrigues(np.array([0.0, np.radians(degrees), 0.0]))
+            rvec, _ = cv2.Rodrigues(yaw @ roll)
             tvec = point - cv2.Rodrigues(rvec)[0] @ BOARD_CENTER
             corners = corners_in_frame(objp, rvec, tvec, K, dist)
             if corners is None:
@@ -615,44 +626,61 @@ def test_a_real_board_can_satisfy_every_target():
 
 
 def test_the_three_poses_stay_distinct():
-    """The score has to tell the poses apart, or the tilt requirement quietly evaporates.
+    """How much the score still tells the poses apart, now that position is loose.
 
-    This is the check that forced the score to be the *worst* corner distance rather than
-    the mean: measured as a mean, a square-on board scores no worse against a turned guide
-    than a well-matched board does, and all three poses accept each other.
+    Not everywhere any more, and that is a deliberate trade rather than a regression. The
+    poses at one placement are separated mostly by where yaw puts the board's projected
+    centre, not by its shape, so forgiving a centring error forgives most of the separation
+    with it. Position tolerance was doubled on purpose -- see POSITION_WEIGHT -- and this
+    records what it cost, band by band, so that a change which quietly collapsed the rest
+    would still be caught.
+
+    What holds: **square on is refused for a turned target** -- the tilt requirement, and
+    the one the capture study says matters, a near-fronto-parallel set being the worst
+    configuration it measured -- in every band except the furthest. At the far band the
+    board subtends a quarter of the frame, its yaw skews the corners by less than the
+    position slack now allows, and the two are no longer separable.
+
+    What does not: which *way* the board is turned. A symmetric checkerboard yawed one way
+    and rotated 180 degrees in its own plane projects the same quad as the opposite yaw, so
+    the direction only ever showed up as the small centre shift that position slack now
+    absorbs. The guide still draws the direction and the operator still follows it; the
+    tool no longer insists on it.
     """
     plan = TargetPlan(GRID, SQUARE_M, IMAGE_SIZE)
     by_position = {}
     for target in plan.targets:
         by_position.setdefault(target.position, []).append(target)
 
-    worst_gap = float("inf")
-    failures = []
+    confused, pairs = {}, {}
     for here in by_position.values():
         for target in here:
             for other in here:
                 if other is target:
                     continue
+                # "tilt" is square-on set against a turned board or the reverse; "direction"
+                # is one turn against the other.
+                kind = "direction" if (not target.flat and not other.flat) else "tilt"
+                key = (target.band, kind)
+                pairs[key] = pairs.get(key, 0) + 1
                 corners = other.guide_corners().reshape(-1, 1, 2).astype(np.float32)
-                value = target.score(corners, GRID)
-                worst_gap = min(worst_gap, value / ACCEPT_SCORE)
                 if target.accepts(corners, GRID)[0]:
-                    failures.append(f"{target.band}/{target.pose} accepted {other.pose}")
+                    confused[key] = confused.get(key, 0) + 1
 
-    if failures:
-        print(f"     {failures[:3]}")
-    check("poses: no pose accepts another's board", len(failures), 0)
-    check_below("poses: closest confusion, as a fraction of the threshold",
-                1 / worst_gap, 0.75, "x")
+    # Reported per band rather than asserted per band: the ladder is data, and naming
+    # bands here only makes the test fall over when one is renamed or dropped.
+    for band in sorted({b for b, _ in pairs}):
+        tilt_pairs = pairs.get((band, "tilt"), 0)
+        if tilt_pairs:
+            print(f"     {band:12} tilt confusion "
+                  f"{confused.get((band, 'tilt'), 0)}/{tilt_pairs}")
 
-    # And a board that is turned the wrong way is named as such.
-    target = [t for t in plan.targets if not t.flat][0]
-    mirror = [t for t in plan.targets
-              if t.position == target.position and not t.flat and t is not target][0]
-    ok, reason = target.accepts(
-        mirror.guide_corners().reshape(-1, 1, 2).astype(np.float32), GRID)
-    check("poses: the wrong direction is refused", ok, False)
-    check("poses: and says which way", reason, "turn it the other way")
+    tilt_total = sum(n for (_, kind), n in pairs.items() if kind == "tilt")
+    tilt_bad = sum(n for (_, kind), n in confused.items() if kind == "tilt")
+    check_below("poses: square-on accepted for a turned target",
+                tilt_bad / tilt_total, 0.30, "x")
+    check_below("poses: wrong-pose pairs accepted overall",
+                sum(confused.values()) / sum(pairs.values()), 0.45, "x")
 
 
 def test_every_position_is_worked_three_ways():
@@ -706,7 +734,68 @@ def test_the_score_is_the_only_gate():
           0.0)
 
 
+def test_the_plan_asks_for_stereo_pairs():
+    """The plan has to produce frames both cameras can see, or there are no extrinsics.
+
+    The per-eye bands cannot be relied on for this. They place the board across the whole
+    of one camera's field, and at the near end a board filling one eye is entirely outside
+    the other -- the cameras are 293 mm apart. Left to chance, only a fifth of the plan
+    landed in both. So some placements say so explicitly, and this checks the geometry
+    actually backs them up rather than taking the label's word for it.
+    """
+    plan = TargetPlan(GRID, SQUARE_M, IMAGE_SIZE)
+    # board_points, not object_points: the guides are built from a board centred on
+    # its own middle, while object_points puts a corner at the origin. Mixing them
+    # offsets every projection by half a board.
+    objp = board_points(GRID, SQUARE_M).astype(np.float64)
+    width, height = IMAGE_SIZE
+
+    def in_frame(pts):
+        pts = pts.reshape(-1, 2)
+        return (pts[:, 0].min() >= 0 and pts[:, 1].min() >= 0
+                and pts[:, 0].max() < width and pts[:, 1].max() < height)
+
+    declared = [t for t in plan.targets if t.stereo]
+    check("stereo: the plan declares some", len(declared) > 0, True)
+
+    both, declared_both = 0, 0
+    for target in plan.targets:
+        rotation, _ = cv2.Rodrigues(target.rvec())
+        x, y, w, h = target.box
+        centre_x, centre_y = x + w / 2, y + h / 2
+        tvec = np.array([[(centre_x - width / 2) * target.depth / target.fx],
+                         [(centre_y - height / 2) * target.depth / target.fx],
+                         [target.depth]])
+        if target.eye == "left":
+            pose_l, pose_r = (rotation, tvec), (R_TRUE @ rotation, R_TRUE @ tvec + T_TRUE)
+        else:
+            pose_r, pose_l = (rotation, tvec), (R_TRUE.T @ rotation,
+                                                R_TRUE.T @ (tvec - T_TRUE))
+        left, _ = cv2.projectPoints(objp, cv2.Rodrigues(pose_l[0])[0], pose_l[1],
+                                    K_LEFT, DIST_LEFT)
+        right, _ = cv2.projectPoints(objp, cv2.Rodrigues(pose_r[0])[0], pose_r[1],
+                                     K_RIGHT, DIST_RIGHT)
+        if in_frame(left) and in_frame(right):
+            both += 1
+            if target.stereo:
+                declared_both += 1
+
+    check("stereo: every declared placement really is in both eyes",
+          declared_both, len(declared))
+    # Well clear of the six the solver refuses to run below, and of the twenty the plan
+    # used to manage by accident alone.
+    check_below("stereo: pairs the plan yields", 30 / max(1, both), 1.0, "x")
+    print(f"     {both} of {len(plan.targets)} placements land in both eyes")
+
+
 def test_the_bands_start_close_and_work_out():
+    """Each ladder works outwards, and the near end stays near.
+
+    Two ladders now, not one: the per-eye bands, and the stereo bands that start further
+    out because the cameras cannot both see a board any closer. They are checked
+    separately -- run together they appear to double back, which is the two ladders
+    interleaving rather than either going the wrong way.
+    """
     plan = TargetPlan(GRID, SQUARE_M, IMAGE_SIZE)
     order, seen = [], set()
     for target in plan.targets:
@@ -714,15 +803,25 @@ def test_the_bands_start_close_and_work_out():
             seen.add(target.band)
             order.append(target)
 
+    for label, ladder in (("per-eye", [t for t in order if not t.stereo]),
+                          ("stereo", [t for t in order if t.stereo])):
+        widths = [t.expected_width for t in ladder]
+        check(f"bands: the {label} ladder works outwards",
+              all(a > b for a, b in zip(widths, widths[1:])), True)
+
     widths = [t.expected_width for t in order]
-    check("bands: each is further out than the last",
-          all(a > b for a, b in zip(widths, widths[1:])), True)
-    check("bands: the first nearly fills the frame",
-          widths[0] / IMAGE_SIZE[0] > 0.6, True)
+    # The near end was pulled back deliberately -- 0.36 m was closer than the board could
+    # comfortably be held -- so this only guards against the close band drifting away
+    # altogether, which is what would cost the corner distortion its only constraint.
+    check("bands: the first still dominates the frame",
+          widths[0] / IMAGE_SIZE[0] > 0.5, True)
     check("bands: the first is a single position",
           sum(1 for t in plan.targets if t.band == order[0].band) // len(POSES), 2)
-    check("bands: the whole ladder is about a hundred frames",
-          90 <= plan.wanted <= 120, True)
+    stereo = sum(1 for t in plan.targets if t.stereo)
+    print(f"     {plan.wanted} frames: {plan.wanted - stereo} per-eye, {stereo} stereo")
+    check("bands: the ladder is a session's worth of frames",
+          60 <= plan.wanted <= 100, True)
+    check("bands: and enough of them are stereo", stereo >= 12, True)
 
 
 def test_saved_yaml_matches_the_firmware_contract():
@@ -776,6 +875,7 @@ def main():
         test_the_three_poses_stay_distinct,
         test_every_position_is_worked_three_ways,
         test_the_score_is_the_only_gate,
+        test_the_plan_asks_for_stereo_pairs,
         test_the_bands_start_close_and_work_out,
         test_saved_yaml_matches_the_firmware_contract,
     ):
