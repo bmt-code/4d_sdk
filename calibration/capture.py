@@ -64,8 +64,10 @@ STILL_MOTION_PX = 5.0
 STILL_SECONDS = 0.30
 # Sharpness must clear this fraction of the running median of what has been saved.
 BLUR_RATIO = 0.6
-# Never shoot the same target twice within this many seconds.
-SHOT_COOLDOWN = 0.6
+# Never shoot again within this many seconds of a saved frame. Long enough to be a beat
+# the operator can feel: the shutter fires on its own, so back-to-back captures read as
+# one event and leave them unsure whether the second placement was ever taken.
+SHOT_COOLDOWN = 1.0
 # The board has to have actually moved since the last saved frame, in full-res pixels of
 # the *worst* corner's displacement. Without some such gate a stationary board satisfies
 # every queued target in turn and the tool fires several times over while the operator

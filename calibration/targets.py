@@ -74,18 +74,22 @@ BANDS = (
 # apart, so at 0.48 m a board filling one eye is entirely outside the other; the overlap
 # only opens up past about 0.75 m, and widens from there.
 #
-# The board is asked for upright here, stood on its end. The strip both cameras can see is
-# narrow and tall, and a board turned on its end fits it at ranges where a landscape one
-# does not reach the overlap at all -- which is also why these fills look small next to the
-# per-eye bands: an upright board spans the frame with its short side.
+# Held the same way round as every other band. Standing the board on its end reaches the
+# overlap at closer range on paper, and the detector orders a rotated board correctly, but
+# it did not work on the bench -- so the geometry that was only reachable upright is given
+# up rather than asked for.
+#
+# They start further out than the per-eye bands because they have to: the cameras are
+# 293 mm apart, so at 0.48 m a board filling one eye is entirely outside the other, and the
+# overlap only opens up past about 0.8 m.
 #
 #   stereo near  2x2  x 3 poses = 12 frames
 #   stereo far   2x2  x 3       = 12
 #                               ---
 #                                24
 STEREO_BANDS = (
-    ("stereo near", 0.19, (2, 2)),
-    ("stereo far",  0.15, (2, 2)),
+    ("stereo near", 0.28, (2, 2)),
+    ("stereo far",  0.20, (2, 2)),
 )
 
 # The three poses worked at every position, as a yaw in degrees. Square on comes first: it
@@ -117,8 +121,13 @@ GUIDE_CLEARANCE = 12
 # a 9x6 board, 10 squares across against 8.
 FULL_BOARD_RATIO = 1.25
 
-# Slack kept between a stereo placement and the edge of the other camera's field.
-STEREO_MARGIN_PX = 90
+# Slack kept between a stereo placement and the edge of the other camera's field. Generous
+# on purpose: the disparity is worked out from a nominal baseline and focal length, the
+# operator lands near the guide rather than on it, and a placement that only just clears
+# the far sensor stops clearing it on both counts at once. Costs some spread across the
+# frame, which is the cheaper thing to lose -- a stereo frame the second camera cannot see
+# contributes nothing at all.
+STEREO_MARGIN_PX = 220
 
 # One number decides whether a frame counts: how far the detected corners sit from the
 # guide's, as a fraction of the guide's width. The guide already says where the board goes,
@@ -628,12 +637,12 @@ class TargetPlan:
         self.baseline = nominal_baseline()
         self._stereo_floor = {}
         for band, fill, shape in STEREO_BANDS:
-            width_px, height_px, depth = self._geometry(fill, upright=True)
+            width_px, height_px, depth = self._geometry(fill, upright=False)
             for box in self._stereo_boxes(width_px, height_px, shape, depth):
                 for pose, yaw_deg in POSES:
                     target = Target("left", band, depth, box, pose, yaw_deg,
                                     self.fx, grid, square_m, image_size, self.dist,
-                                    stereo=True, roll_deg=90.0)
+                                    stereo=True)
                     target.fit_into_frame(
                         min_centre_x=self._stereo_floor.get(round(depth, 4)))
                     self.targets.append(target)
@@ -649,7 +658,7 @@ class TargetPlan:
         """
         cols, rows = shape
         img_w, img_h = self.image_size
-        margin_x, margin_y = self._margins(depth, roll_deg=90.0)
+        margin_x, margin_y = self._margins(depth)
         disparity = self.fx * self.baseline / depth
         # The margin is generous on purpose: the disparity is worked out from a nominal
         # baseline and focal length, and a placement that only just clears the edge of the

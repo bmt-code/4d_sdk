@@ -109,12 +109,12 @@ mean and both exposures land in the same place.
 
 ### Calibration (`calibration/`)
 
-**Stereo placements ask for the board upright** (`Target.roll_deg = 90`): the strip both
-cameras see is narrow and tall, so an upright board reaches the overlap where a landscape
-one does not. `Target.rvec()` is the single source of that convention -- roll in the board's
-own plane, then yaw about the camera's vertical. Anything rebuilding a board at a placement
-must use it; composing from `yaw_deg` alone silently drops the roll and puts a landscape
-board where an upright one was asked for, which broke two tests at once.
+**Stereo placements are landscape, like everything else.** `Target.roll_deg` exists and an
+upright board does reach the overlap closer on paper -- the detector orders a rotated board
+correctly and it passes in simulation -- but it did not work on the bench, so that geometry
+is given up rather than asked for. If it is ever revisited: `Target.rvec()` is the single
+source of the roll-then-yaw convention, and composing a pose from `yaw_deg` alone silently
+drops the roll, which broke two tests at once last time.
 
 **Guide geometry, two traps.** The drawn guide is `Target.guide_full()` -- the whole
 board, a square wider on every side than the inner corners a detector reports -- so any

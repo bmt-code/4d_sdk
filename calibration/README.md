@@ -135,19 +135,17 @@ be in both eyes whatever you do:
 relative to the other. They start further out because they have to: the cameras are 293 mm
 apart, so at 0.48 m a board filling one eye is entirely outside the other.
 
-**Hold the board upright for these** — stood on its end. The strip both cameras can see is
-narrow and tall, so an upright board reaches the overlap at ranges a landscape one cannot,
-and fits more placements across it. The header says `UPRIGHT` when it wants one, and the
-guide is drawn on end so there is nothing to remember.
+Held the same way round as every other band. They sit well inside the overlap rather than
+at the edge of it: a placement that only just clears the far camera stops clearing it as
+soon as you land a little off the guide, and a stereo frame the second camera cannot see
+contributes nothing at all. Each one now tolerates about 370 px of drift at worst before
+the far camera loses the board.
 
 | Band | Board fills | Roughly | Positions | Frames |
 |---|---|---|---|---|
-| stereo near | 19% | 0.78 m | 2x2 | 12 |
-| stereo far | 15% | 0.99 m | 2x2 | 12 |
+| stereo near | 28% | 0.85 m | 2x2 | 12 |
+| stereo far | 20% | 1.19 m | 2x2 | 12 |
 | | | | | **90 total** |
-
-The fills look small next to the per-eye bands because an upright board spans the frame
-with its short side.
 
 It starts almost filling the frame and works out. The first band is one position, and that
 single frame is what pins the distortion at the very edge of the field -- nothing further
