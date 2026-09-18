@@ -5,7 +5,7 @@ Python SDK for the **4D Stereo Camera**. Provides stereo image streaming, rectif
 ## Requirements
 
 - Python >= 3.8
-- Core: `opencv-python`, `numpy`, `zmq`
+- Core: `opencv-python`, `numpy`, `pyzmq`
 - Optional: `scipy` (calibration), `rclpy` + `cv_bridge` (ROS2)
 
 ## Installation
@@ -17,6 +17,13 @@ pip3 install -r requirements.txt
 # Install as editable package
 pip3 install -e .
 ```
+
+On Ubuntu 22.04 with the stock `pip` (22.0.2), the editable install fails with
+`build backend is missing the 'build_editable' hook` or a `Permission denied` under
+`/usr/local/lib/python3.10/dist-packages`: that pip's isolated build environment still
+sees the system setuptools 59.6, which predates editable wheels. Either upgrade pip
+first (`pip3 install --user -U pip`) or, with setuptools >= 64 already in your user
+site, install without isolation: `pip3 install --no-build-isolation -e .`.
 
 For ROS2 features, also install:
 

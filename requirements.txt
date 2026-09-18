@@ -1,6 +1,6 @@
 scipy
 numpy
 opencv-python
-zmq
+pyzmq
 PyYAML
 tqdm

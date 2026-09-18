@@ -250,4 +250,4 @@ deployment is rsync-direct to the camera.
 - Stereo width is computed as `full_width // 2` (left and right images are concatenated horizontally)
 - `rectify_stereo_images()` returns a 4-tuple: `(rectified_left, rectified_right, left_rect_k, right_rect_k)`
 - `CustomLogger` wraps Python's `logging` with `throttle_sec` and `log_once` options to control log verbosity
-- Package requires Python >= 3.8; core deps: `opencv-python`, `numpy`, `zmq`, `PyYAML`, `tqdm`; optional: `scipy` (calibration checks), `rclpy`/`cv_bridge` (ROS2)
+- Package requires Python >= 3.8; core deps: `opencv-python`, `numpy`, `pyzmq`, `PyYAML`, `tqdm`; optional: `scipy` (calibration checks), `rclpy`/`cv_bridge` (ROS2)
