@@ -180,3 +180,6 @@ cython_debug/
 
 # Calibration runs
 calibration/sessions/
+
+# ROS2 bags
+*.db3
