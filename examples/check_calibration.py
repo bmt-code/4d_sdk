@@ -1,9 +1,6 @@
-"""Check stereo camera calibration quality using a checkerboard.
+"""Check stereo calibration quality with a checkerboard: detect corners in live stereo
+frames, triangulate, compare pairwise distances against the known grid.
 
-Detects checkerboard corners in live stereo frames, triangulates 3D points,
-and compares pairwise distances against the known grid geometry.
-
-Usage:
     python check_calibration.py
     python check_calibration.py --chessboard 7,5 --square 30.0
 """
@@ -20,17 +17,8 @@ from stereo_4d import Stereo4DCameraHandler
 
 def points_3d_from_stereo(left_points, right_points, K_left, K_right, baseline):
     """Triangulate 3D points from stereo correspondences.
-
-    Args:
-        left_points: (N, 2) array of left image points.
-        right_points: (N, 2) array of right image points.
-        K_left: 3x3 left camera intrinsic matrix.
-        K_right: 3x3 right camera intrinsic matrix.
-        baseline: Distance between cameras in meters.
-
-    Returns:
-        (N, 3) array of 3D points in meters.
-    """
+    left_points/right_points (N, 2), K_left/K_right 3x3 intrinsics, baseline in metres.
+    Returns (N, 3) points in metres."""
     if left_points.shape[0] != right_points.shape[0]:
         return np.empty((0, 3))
 
@@ -53,16 +41,9 @@ def points_3d_from_stereo(left_points, right_points, K_left, K_right, baseline):
 
 
 def check_grid_quality(points_3d, chessboard_size, square_size_mm):
-    """Compare pairwise distances of detected 3D points against ideal grid.
-
-    Args:
-        points_3d: (N, 3) array of 3D points in mm.
-        chessboard_size: (cols, rows) inner corner count.
-        square_size_mm: Checkerboard square size in mm.
-
-    Returns:
-        (mean_error, max_error) in mm.
-    """
+    """Pairwise distances of detected 3D points vs ideal grid.
+    points_3d (N, 3) mm, chessboard_size (cols, rows) inner corners, square_size_mm.
+    Returns (mean_error, max_error) in mm."""
     cols, rows = chessboard_size
     x_vec = np.arange(cols) * square_size_mm
     y_vec = np.arange(rows) * square_size_mm
@@ -108,7 +89,7 @@ def main():
     parser = argparse.ArgumentParser(description="Check stereo calibration quality with a checkerboard.")
     parser.add_argument("--chessboard", type=str, default="9,6",
                         help="Inner corners as 'cols,rows' (default: 9,6)")
-    parser.add_argument("--square", type=float, default=24,
+    parser.add_argument("--square", type=float, default=26.5,
                         help="Square size in mm (default: 26.5)")
     parser.add_argument("--ip", type=str, default="172.31.1.77",
                         help="Camera IP address (default: 172.31.1.77)")

@@ -178,6 +178,8 @@ cython_debug/
 *.jpg
 .vscode
 
-*.yaml
-*.txt
+# Calibration runs
+calibration/sessions/
+
+# ROS2 bags
 *.db3
