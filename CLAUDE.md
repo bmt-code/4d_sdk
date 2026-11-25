@@ -107,6 +107,19 @@ mean and both exposures land in the same place.
   `find_checkerboard`, `points_3d_from_stereo` and `check_grid_quality` are reused by
   `calibration/verify.py`
 
+### Camera firmware update (`tools/update_camera.py`)
+
+Standard library only and importing nothing from `stereo_4d` (whose `__init__` pulls cv2), so
+one file can be curled onto a customer computer; keep it that way. The Orion deployer copies
+it to the target and runs it with `--json --secrets-stdin`, so the JSON event shape
+(`step`/`check`/`info`/`log`/`warn`/`result`) is an interface. Every remote call has a timeout;
+`install.sh` runs detached (`setsid nohup`, log in `/var/tmp`) and is followed by polling, so a
+dropped SSH session does not kill it. The camera's wired link must never be a default route:
+firmware before ORION-181 set `ipv4.gateway 172.31.1.1` on it, which sent IPv4 into the cable
+(github.com failed, IPv6-capable google.com worked); `network` fixes it with
+`ipv4.never-default` and `ip route del`, never by bouncing the link (that drops the session),
+and `update` re-applies it after the reboot. Docs: `docs/camera_update.md`.
+
 ### Calibration (`calibration/`)
 
 **Stereo placements are landscape, like everything else.** `Target.roll_deg` exists and an
