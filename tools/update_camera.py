@@ -7,7 +7,7 @@ installed: copy it over, or fetch it straight from GitHub (the SDK repository is
     curl -fsSLO https://raw.githubusercontent.com/bmt-code/4d_sdk/main/tools/update_camera.py
     python3 update_camera.py                     # same as: network
     python3 update_camera.py preflight
-    python3 update_camera.py update --ref v2.1.0
+    python3 update_camera.py update --ref TAG
 
 Commands
     preflight   says exactly which layer is broken, from the cable to GitHub. Changes nothing,
@@ -24,11 +24,12 @@ Nothing waits forever: every remote command has a timeout, and the reboot has a 
 
 Secrets (the GitHub token the camera pulls the private firmware with, a Wi-Fi password, the
 camera's password) are asked for on the terminal, or with --secrets-stdin read as one JSON
-object from stdin ({"token": ..., "wifi_psk": ..., "camera_password": ...}). They are never
-saved, never put on a command line, and never printed.
+object from stdin ({"token": ..., "wifi_psk": ..., "camera_password": ...}). They are
+never put on a command line and never printed. The token and the camera's password are not
+saved; a Wi-Fi password is saved on the camera only, in a root-only NetworkManager profile.
 
 Exit codes: 0 ok, 2 usage, 10 no link, 11 no SSH server, 12 SSH login refused, 13 host key
-changed, 14 no usable sudo, 15 no firmware found, 16 locked out after failed logins, 20 camera has no internet, 21 Wi-Fi
+changed, 14 no usable sudo, 15 no firmware found, 16 camera refusing logins, 20 camera has no internet, 21 Wi-Fi
 failed, 30 git failed, 31 calibration not preserved, 40 install.sh failed, 41 camera did not
 come back, 50 service unhealthy, 130 interrupted.
 """
@@ -82,8 +83,8 @@ class Failure(Exception):
 # --------------------------------------------------------------------------- output
 
 class Out:
-    """Human output on a terminal, or one JSON object per line with --json (for wrappers
-    such as the Orion deployer, which render it themselves)."""
+    """Human output on a terminal, or one JSON object per line with --json (for wrappers,
+    which render it themselves)."""
 
     def __init__(self, as_json):
         self.json = as_json
@@ -311,15 +312,11 @@ def check_ping(cam, out):
     return False
 
 
-# What OpenSSH >= 9.8 (the camera runs 10.0) says instead of its greeting while
-# PerSourcePenalties shuts this computer out: every failed login (and every connection
-# dropped before logging in) adds seconds, and from 15 s on, sshd refuses the address
-# outright, for up to 10 minutes. A client retrying a refused key keeps itself locked out.
+# What the camera answers instead of an SSH greeting while it refuses this computer
 BLOCKED = "Not allowed at this time"
-BLOCKED_HINT = ("sshd on the camera locks out an address after repeated failed logins (OpenSSH\n"
-                "PerSourcePenalties). Usually: this computer has no key on the camera and kept retrying.\n"
-                "Stop retrying: it clears by itself within minutes, or at once if the camera is\n"
-                "power-cycled. Then install a key (the script offers it, or ssh-copy-id).")
+BLOCKED_HINT = ("The camera is refusing logins from this computer for now. Stop retrying and wait a few\n"
+                "minutes, or power-cycle the camera. Then install a key (the script offers it, or\n"
+                "ssh-copy-id).")
 
 
 def check_ssh_port(cam, out):
@@ -391,7 +388,7 @@ def check_sudo(cam, out, secrets):
     if rc != 0:
         secrets.values.pop("camera_password", None)
         out.check("sudo", False, "the camera refused that password for sudo",
-                  f"It is {cam.user}'s login password on the camera.")
+                  "Check the password and rerun.")
         return False
     cam.sudo_password = password
     cam.provide_askpass()
@@ -490,8 +487,7 @@ def check_internet(cam, out, routes=None):
     bad = wired_defaults(routes)
     if bad:
         out.check("Camera routes", False, f"the Ethernet link to this computer is a default route: {bad[0]}",
-                  f"IPv4 internet goes into the cable, where nothing routes it. IPv6 can still leave over\n"
-                  f"Wi-Fi, which is why google.com (IPv6) works and github.com (IPv4 only) does not.\n"
+                  f"Internet traffic (github.com included) goes into the cable, where nothing routes it.\n"
                   f"Fix: python3 {os.path.basename(__file__)} network")
     else:
         out.check("Camera routes", True,
@@ -573,7 +569,7 @@ def install_key(cam, out, secrets, interactive):
         if "Permission denied" in err:
             raise Failure("auth", f"{cam.user}@{cam.ip} refused the password")
         if "Connection closed" in err or BLOCKED in err:
-            raise Failure("blocked", "The camera locked this computer out after failed logins", BLOCKED_HINT)
+            raise Failure("blocked", "The camera refuses this computer for now", BLOCKED_HINT)
         raise Failure("auth", f"Could not install the key: {last_line(err)}")
     cam.key = key
 
@@ -954,9 +950,8 @@ def check_health(cam, out, root, backup):
 # --------------------------------------------------------------------------- commands
 
 def wait_unblocked(cam, out, limit):
-    """Waits, without logging in (which would extend it), for sshd to lift the lockout.
-    Probes every 20 s: a probe never logs in, so it costs 1 s of penalty, far less than
-    the wait gives back."""
+    """Waits for the camera to accept this computer again. Probes every 20 s without
+    logging in."""
     out.info(f"Waiting up to {limit} s for the camera to accept this computer again, without logging in…")
     start = time.time()
     while time.time() - start < limit:
@@ -969,7 +964,7 @@ def wait_unblocked(cam, out, limit):
                     return
         except OSError:
             pass
-    raise Failure("blocked", f"The camera still refuses this computer after {limit} s (failed-login lockout)",
+    raise Failure("blocked", f"The camera still refuses this computer after {limit} s",
                   BLOCKED_HINT)
 
 
@@ -1007,7 +1002,7 @@ def connect(cam, out, args, secrets, interactive, retries):
         problem = check_login(cam, out)
     if problem:
         raise Failure(problem, {
-                                "blocked": "The camera keeps refusing this computer (failed-login lockout)",
+                                "blocked": "The camera keeps refusing this computer",
                                 "host_key": "The camera's host key changed",
                                 "auth": "The camera refused the SSH login",
                                 "ssh_port": "SSH to the camera does not work"}[problem])
@@ -1062,7 +1057,7 @@ def cmd_wifi(cam, out, args, secrets, interactive):
 
 def cmd_update(cam, out, args, secrets, interactive):
     if not args.ref:
-        raise Failure("usage", "update needs --ref: the firmware branch or tag to install (e.g. v2.1.0 or main)")
+        raise Failure("usage", "update needs --ref: the firmware branch or tag to install (e.g. main)")
     token = secrets.get("token", "GitHub token that can read bmt-code/stereo_4d (not saved)")
     if token:
         problem = token_problem(token, args.ref, args.repo)
@@ -1093,7 +1088,7 @@ def cmd_update(cam, out, args, secrets, interactive):
         wait_reboot(cam, out, boot, args.reboot_timeout)
         if cam.sudo_password:  # /dev/shm was emptied by the reboot
             cam.provide_askpass()
-        # An older install.sh puts the gateway back on Ethernet at every install
+        # install.sh configures the network: make sure the route is still right
         out.step("Camera routes after the reboot")
         fix_network(cam, out)
 
@@ -1128,7 +1123,7 @@ def main(argv=None):
     p.add_argument("--no-install", action="store_true", help="update: pull and restart, skip install.sh")
     p.add_argument("--retries", type=int, default=None, help="tries to reach the camera, 10 s apart (default: 6 for update, else 1)")
     p.add_argument("--blocked-wait", type=int, default=180,
-                   help="seconds to wait out sshd's failed-login lockout (default 180)")
+                   help="seconds to wait while the camera refuses logins (default 180)")
     p.add_argument("--install-timeout", type=int, default=2400, help="seconds for install.sh (default 2400)")
     p.add_argument("--reboot-timeout", type=int, default=360, help="seconds for the reboot (default 360)")
     p.add_argument("--secrets-stdin", action="store_true",

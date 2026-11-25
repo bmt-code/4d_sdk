@@ -72,13 +72,13 @@ python3 examples/simple_stream.py
 ## Updating the camera firmware
 
 `tools/update_camera.py` updates the camera from the computer it is cabled to. It is a single
-standard-library file, so it runs on a customer computer without the SDK or the Orion deployer:
+standard-library file, so it runs on any computer without the SDK:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/bmt-code/4d_sdk/main/tools/update_camera.py
 python3 update_camera.py                        # same as network: fixes the camera's routes
 python3 update_camera.py preflight              # names the exact layer that is broken
-python3 update_camera.py update --ref v2.1.0
+python3 update_camera.py update --ref TAG
 ```
 
 It checks the link layer by layer, fixes the camera's routes and Wi-Fi, keeps the calibration,

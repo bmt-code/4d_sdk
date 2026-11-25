@@ -1,6 +1,6 @@
 """tools/update_camera.py without a camera: a fake camera replays what a Pi answers, here
-the broken one from the field (Ethernet carrying a default route via 172.31.1.1), and the
-checks must name that, the fix must remove it, and the JSON a wrapper reads must hold.
+one whose Ethernet carries a default route via 172.31.1.1, and the checks must name that,
+the fix must remove it, and the JSON a wrapper reads must hold.
 
     python3 tests/test_update_camera.py
 """
@@ -16,7 +16,7 @@ import update_camera as uc  # noqa: E402
 
 BROKEN_ROUTES = """wired=eth0
 wired_con=Wired connection 1
-wifi=wlan0:connected:Clinic WiFi
+wifi=wlan0:connected:Test WiFi
 v4=default via 172.31.1.1 dev eth0 proto static metric 100
 v4=default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.50 metric 600
 v6=default via fe80::1 dev wlan0 proto ra metric 600 pref medium
